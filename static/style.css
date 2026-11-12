@@ -271,6 +271,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--green); box-shad
 .slot.availability:not(.reserved) input:checked+span small:empty:after{content:'Disponível'}
 .slot.availability:not(.reserved) input:not(:checked)+span small:empty:after{content:'Não atende'}
 .slot-legend{font-size:14px;color:var(--muted);line-height:1.8}
+.clinical-record{max-width:960px}.clinical-history{margin-top:20px}.clinical-history .section-title{margin-top:0}.clinical-text p{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:6px}.clinical-text{margin-top:22px;border-top:1px solid var(--line);padding-top:18px}.completion-option{display:flex;align-items:center;gap:12px}.completion-option input{width:20px;min-height:20px;height:20px;margin:0;flex-shrink:0;accent-color:var(--green)}.agenda-hour form{margin-top:12px}
 .calendar-layout{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(300px,1fr);gap:24px;align-items:start}
 .calendar-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:24px}.calendar-heading h2{margin:0;font-size:22px}
 .calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:7px}.weekday{text-align:center;font-size:13px;padding:8px 0;color:var(--muted)}

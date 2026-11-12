@@ -35,6 +35,9 @@ O perfil é identificado pela conta. Profissionais e atendentes começam com a s
 - Horários de 08h a 18h, de hora em hora, com cores para livre, indisponível e agendado.
 - Transações e índices únicos impedem duas consultas para o mesmo médico ou paciente no mesmo horário. Cancelamento preserva histórico e libera o horário.
 - Validações no servidor, SQL parametrizado e auditoria de alterações.
+- Médico abre **Registro do atendimento** na consulta da agenda e salva comentário/evolução, quadro do paciente e encaminhamento. Pode salvar um rascunho ou marcar a consulta como realizada após o horário de início.
+- **Histórico de consultas** pesquisa atendimentos realizados pelo nome ou e-mail do paciente. Anotações clínicas são acessíveis apenas ao médico responsável; pacientes, atendentes, admin e outros médicos não têm acesso pela aplicação.
+- Registros são persistidos com controle de versão e cópia da versão anterior a cada alteração. Consultas realizadas não podem ser canceladas. O banco é atualizado automaticamente ao iniciar, preservando os dados existentes.
 
 ## Dados e manutenção
 

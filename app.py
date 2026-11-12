@@ -47,7 +47,7 @@ def active_doctors():
 
 
 def occupied(doc, day, hour):
-    return hour not in DAY_HOURS.get((doc, day), ROUTINES.get(doc, TIMES)) or any(a['doctor'] == doc and a['date'] == day and a['time'] == hour and a['status'] == 'Confirmado' for a in APPOINTMENTS)
+    return hour not in DAY_HOURS.get((doc, day), ROUTINES.get(doc, TIMES)) or any(a['doctor'] == doc and a['date'] == day and a['time'] == hour and a['status'] in ['Confirmado', 'Realizado'] for a in APPOINTMENTS)
 
 
 def fmt(day):
@@ -63,6 +63,7 @@ def page(title, content, user=None, current='', message=''):
         role = user['role']
         menus = {'paciente': [('buscar', '⌕', 'Encontrar profissional'), ('consultas', '▦', 'Meus agendamentos')], 'profissional': [('agenda', '▦', 'Minha agenda'), ('horarios', '◷', 'Disponibilidade')], 'atendente': [('buscar', '⌕', 'Agendar consulta'), ('consultas', '▦', 'Agendamentos')], 'admin': [('equipe', '♧', 'Funcionários')]}
         menus['atendente'].append(('horarios', '◷', 'Horários dos médicos'))
+        menus['profissional'].append(('historico', '▤', 'Histórico de consultas'))
         menus[role].append(('senha', '⚙', 'Alterar senha'))
         links = ''.join(f'<a class="nav {"selected" if key == current else ""}" href="/{key}"><span>{icon}</span>{label}</a>' for key, icon, label in menus[role])
         shell = f'<aside><a class="brand" href="/">agend<span>aí</span><i>✳</i></a><div class="workspace">ESPAÇO DO {ROLES[role].upper()}</div><nav>{links}</nav><div class="aside-bottom"><div class="demo-tag">◌ Ambiente de demonstração</div><div class="identity"><b class="mini-avatar">{h(user["name"][:1].upper())}</b><div><strong>{h(user["name"])}</strong><small>{ROLES[role]}</small></div></div><form method="post" action="/sair"><button class="logout">Sair da conta ↗</button></form></div></aside><div class="shell"><header><span>Seu cuidado, bem organizado.</span><span class="header-right">✧ &nbsp; AgendAí <b>MVP</b></span></header><main>{f"<div class=flash role=status>{h(message)}</div>" if message else ""}{content}</main><footer>AgendAí © {date.today().year} <span>Mais tempo para cuidar de você.</span></footer></div>'
@@ -132,7 +133,7 @@ def appointments(user, agenda=False):
     confirmed = [a for a in items if a['status'] == 'Confirmado']
     upcoming = [a for a in confirmed if a['date'] >= date.today().isoformat()]
     content = heading('SUA ROTINA, MAIS ORGANIZADA', 'Minha agenda' if agenda else 'Agendamentos', 'Acompanhe os atendimentos e os detalhes de cada consulta.', '<a class="primary" href="/horarios">Configurar horários</a>' if agenda else '<a class="primary" href="/buscar">+ Agendar consulta</a>')
-    content += f'<div class="stats"><div class="panel"><span>Consultas confirmadas</span><strong>{len(confirmed):02}</strong></div><div class="panel"><span>Consultas canceladas</span><strong>{len(items)-len(confirmed):02}</strong></div><div class="panel"><span>Próximo atendimento</span><strong class="stat-date">{fmt(min(a["date"] for a in upcoming)) if upcoming else "Sem consultas"}</strong></div></div><section class="panel"><div class="section-title"><h2>{"Atendimentos" if agenda else "Suas consultas"}</h2><span class="muted">Todos os agendamentos</span></div>'
+    content += f'<div class="stats"><div class="panel"><span>Consultas confirmadas</span><strong>{len(confirmed):02}</strong></div><div class="panel"><span>Consultas canceladas</span><strong>{sum(a["status"] == "Cancelado" for a in items):02}</strong></div><div class="panel"><span>Próximo atendimento</span><strong class="stat-date">{fmt(min(a["date"] for a in upcoming)) if upcoming else "Sem consultas"}</strong></div></div><section class="panel"><div class="section-title"><h2>{"Atendimentos" if agenda else "Suas consultas"}</h2><span class="muted">Todos os agendamentos</span></div>'
     for a in sorted(items, key=lambda a: (a['date'], a['time'])):
         d = doctor(a['doctor'])
         description = '<p>' + h(a['description']) + '</p>' if a['description'] else ''
@@ -180,7 +181,7 @@ def professional_calendar(user, query):
     previous = month - timedelta(days=1)
     following = (month + timedelta(days=32)).replace(day=1)
     months = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
-    items = [a for a in APPOINTMENTS if a['doctor'] == user['doctor'] and a['status'] == 'Confirmado']
+    items = [a for a in APPOINTMENTS if a['doctor'] == user['doctor'] and a['status'] in ['Confirmado', 'Realizado']]
     content = heading('SUA ROTINA, MAIS ORGANIZADA', 'Minha agenda', 'Selecione um dia no calendário para acompanhar seus atendimentos.', '<a class="primary" href="/horarios">Configurar horários</a>')
     content += f'<div class="calendar-layout"><section class="panel"><div class="calendar-heading"><a class="outline" aria-label="Mês anterior" href="/agenda?date={previous.isoformat()}">←</a><h2>{months[month.month-1]} {month.year}</h2><a class="outline" aria-label="Próximo mês" href="/agenda?date={following.isoformat()}">→</a></div><div class="calendar-grid">'
     content += ''.join(f'<b class="weekday">{name}</b>' for name in ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'])
@@ -190,20 +191,59 @@ def professional_calendar(user, query):
             classes = 'calendar-day' + (' outside' if day.month != month.month else '') + (' has-appointments' if count else '') + (' chosen' if day == selected else '') + (' today' if day == date.today() else '')
             marker = f'<small>{count} consulta'+('s' if count != 1 else '')+'</small>' if count else '<small>Sem consultas</small>'
             content += f'<a class="{classes}" href="/agenda?date={day.isoformat()}" aria-label="{fmt(day.isoformat())}, {count} consultas"><strong>{day.day}</strong>{marker}</a>'
-    content += '</div><p class="muted">● Dias em verde têm consultas confirmadas. O contorno indica hoje.</p></section>'
+    content += '</div><p class="muted">● Dias em verde têm consultas confirmadas ou realizadas. O contorno indica hoje.</p></section>'
     day_items = [a for a in items if a['date'] == selected.isoformat()]
-    content += f'<section class="panel day-schedule"><div class="eyebrow">ATENDIMENTOS DO DIA</div><h2>{fmt(selected.isoformat())}</h2><p class="muted">{len(day_items)} consulta(s) confirmada(s)</p>'
+    content += f'<section class="panel day-schedule"><div class="eyebrow">ATENDIMENTOS DO DIA</div><h2>{fmt(selected.isoformat())}</h2><p class="muted">{len(day_items)} atendimento(s)</p>'
     for hour in TIMES:
         appointment = next((a for a in day_items if a['time'] == hour), None)
         if appointment:
             content += f'<article class="agenda-hour reserved"><strong>{hour}</strong><div><h3>{h(appointment["patient"])}</h3><p>{h(appointment["reason"])}</p>'
             if appointment['description']:
                 content += f'<p>{h(appointment["description"])}</p>'
-            content += f'<form method="post" action="/cancelar"><input type="hidden" name="id" value="{appointment["id"]}"><button class="danger" onclick="return confirm(\'Cancelar esta consulta?\')">Cancelar consulta</button></form></div></article>'
+            content += f'<p class="status">{appointment["status"]}</p>'
+            if user['role'] == 'profissional':
+                content += f'<a class="primary" href="/atendimento?id={appointment["id"]}">Registro do atendimento →</a>'
+            if appointment['status'] != 'Realizado':
+                content += f'<form method="post" action="/cancelar"><input type="hidden" name="id" value="{appointment["id"]}"><button class="danger" onclick="return confirm(\'Cancelar esta consulta?\')">Cancelar consulta</button></form>'
+            content += '</div></article>'
         else:
             free = not occupied(user['doctor'], selected.isoformat(), hour)
             content += f'<article class="agenda-hour {"free" if free else "blocked"}"><strong>{hour}</strong><span>{"Disponível" if free else "Não atende"}</span></article>'
     return content + '</section></div>'
+
+
+def clinical_record(user, query):
+    record = backend.encounter(user, query.get('id', [''])[0])
+    content = heading('REGISTRO DO ATENDIMENTO', h(record['patient']), f'{fmt(record["date"])} às {record["time"]}', '<a class="text-link" href="/historico">Ver histórico</a>')
+    content += f'<section class="panel clinical-record"><p><b>Motivo da consulta:</b> {h(record["reason"])}</p><p class="muted">{h(record["owner"])}</p>'
+    if record['status'] == 'Cancelado':
+        return content + '<p>Esta consulta foi cancelada.</p></section>'
+    content += f'<form method="post" action="/atendimento"><input type="hidden" name="id" value="{record["id"]}"><input type="hidden" name="version" value="{record["version"]}">'
+    for label, key, required in [('Comentário / evolução do atendimento', 'comment', True), ('Quadro do paciente / hipótese diagnóstica', 'condition', False), ('Encaminhamento / conduta', 'referral', False)]:
+        content += f'<label>{label}<textarea name="{key}" rows="5" maxlength="10000" {"required" if required else ""}>{h(record[key] or "")}</textarea></label>'
+    if record['completed_at']:
+        content += '<p class="status">Consulta realizada · Registro disponível no histórico</p>'
+    else:
+        content += '<label class="completion-option"><input type="checkbox" name="complete" value="yes"> Marcar consulta como realizada e incluir no histórico</label>'
+    content += '<p class="muted">Sem marcar como realizada, o registro fica salvo na consulta. Apenas o médico responsável pode acessar estas anotações.</p><button class="primary">Salvar registro</button></form></section>'
+    if record['updated_at']:
+        content += f'<p class="muted">Última atualização: {h(record["updated_at"])} (UTC) · Versão {record["version"]}</p>'
+    return content
+
+
+def clinical_history(user, query):
+    term = query.get('q', [''])[0]
+    records = backend.encounter_history(user, term)
+    content = heading('CONTINUIDADE DO CUIDADO', 'Histórico de consultas', 'Pesquise pelo nome ou e-mail do paciente para consultar atendimentos realizados.')
+    content += f'<section class="panel"><form method="get" action="/historico"><div class="search-line"><input name="q" value="{h(term)}" aria-label="Nome ou e-mail do paciente" placeholder="Nome ou e-mail do paciente"><button class="primary">Pesquisar paciente</button><a class="outline" href="/historico">Limpar</a></div></form></section><p class="muted">{len(records)} atendimento(s) realizado(s)</p>'
+    for record in records:
+        content += f'<article class="panel clinical-history"><div class="section-title"><div><h2>{h(record["patient"])}</h2><p class="muted">{h(record["email"])} · {fmt(record["date"])} às {record["time"]}</p></div><a class="outline" href="/atendimento?id={record["id"]}">Abrir registro →</a></div>'
+        for label, key in [('Comentário', 'comment'), ('Quadro do paciente', 'condition'), ('Encaminhamento', 'referral')]:
+            content += f'<div class="clinical-text"><strong>{label}</strong><p>{h(record[key]) if record[key] else "Não informado."}</p></div>'
+        content += '</article>'
+    if not records:
+        content += '<section class="panel empty">Nenhuma consulta realizada encontrada. Abra uma consulta na agenda e salve o registro marcando-a como realizada.</section>'
+    return content
 
 
 def availability(user, query):
@@ -297,11 +337,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/': return self.redirect('/' + home)
         allowed = {'paciente': ['buscar', 'agendar', 'consultas'], 'profissional': ['agenda', 'horarios'], 'atendente': ['buscar', 'agendar', 'consultas'], 'admin': ['equipe']}[user['role']]
         if user['role'] == 'atendente': allowed.append('horarios')
+        if user['role'] == 'profissional': allowed.extend(['historico', 'atendimento'])
         allowed.append('senha')
         key = path.strip('/')
         if key not in allowed: return self.redirect('/' + home)
         if key == 'senha':
             content = heading('SUA CONTA', 'Alterar senha', 'Após salvar, entre novamente com a nova senha.') + '<section class="panel"><form method="post" action="/senha">' + field('Senha atual', 'current_password', 'password') + field('Nova senha (mínimo 8 caracteres)', 'new_password', 'password') + '<button class="primary">Salvar nova senha</button></form></section>'
+        elif key == 'historico': content = clinical_history(user, q)
+        elif key == 'atendimento': content = clinical_record(user, q)
         elif key == 'buscar': content = search(user, q)
         elif key == 'agendar': content = booking(user, q)
         elif key == 'agenda': content = professional_calendar(user, q)
@@ -336,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def post(self):
         length = int(self.headers.get('Content-Length', 0))
-        if not 0 < length <= 32768:
+        if not 0 < length <= 524288:
             raise backend.DomainError('Formulário inválido ou muito grande.', 413)
         data = parse_qs(self.rfile.read(length).decode('utf-8'), keep_blank_values=True, max_num_fields=50)
         get = lambda key: data.get(key, [''])[0]
@@ -366,6 +409,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/senha':
             backend.change_password(user, get('current_password'), get('new_password'))
             return self.redirect('/', 'session=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/')
+        elif path == '/atendimento':
+            ident = backend.save_encounter(user, values)
+            target, message = f'/atendimento?id={ident}', 'Registro do atendimento salvo.'
         elif path == '/agendar':
             values['patient_password'] = get('patient_password')
             doc = backend.book(user, values)

@@ -110,7 +110,20 @@ def initialize():
             id INTEGER PRIMARY KEY, actor TEXT REFERENCES users(id), action TEXT NOT NULL,
             target TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
-        PRAGMA user_version=1;
+        CREATE TABLE IF NOT EXISTS encounters (
+            appointment_id TEXT PRIMARY KEY REFERENCES appointments(id),
+            comment TEXT NOT NULL DEFAULT '', condition TEXT NOT NULL DEFAULT '',
+            referral TEXT NOT NULL DEFAULT '', completed_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            version INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE IF NOT EXISTS encounter_revisions (
+            id INTEGER PRIMARY KEY, appointment_id TEXT NOT NULL REFERENCES appointments(id),
+            actor TEXT NOT NULL REFERENCES users(id), comment TEXT NOT NULL,
+            condition TEXT NOT NULL, referral TEXT NOT NULL,
+            version INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        PRAGMA user_version=2;
         ''')
 
 
@@ -210,6 +223,10 @@ def snapshot():
         doctors = [dict(r) for r in db.execute('SELECT d.*,u.name,u.active FROM doctors d JOIN users u ON u.id=d.id')]
         staff = [dict(r) for r in db.execute("SELECT id,name,email,role,active FROM users WHERE role IN ('profissional','atendente') ORDER BY created_at,id")]
         appointments = [dict(r) for r in db.execute('SELECT a.*,u.email AS owner FROM appointments a JOIN users u ON u.id=a.patient_id')]
+        completed = {r['appointment_id'] for r in db.execute('SELECT appointment_id FROM encounters WHERE completed_at IS NOT NULL')}
+        for appointment in appointments:
+            if appointment['id'] in completed:
+                appointment['status'] = 'Realizado'
         routines, days = {}, {}
         for row in db.execute('SELECT * FROM availability'):
             if row['day'] == '*': routines[row['doctor']] = json.loads(row['hours'])
@@ -283,6 +300,8 @@ def cancel(user, ident):
             raise DomainError('Consulta não encontrada.', 404)
         if user['role']=='paciente' and appointment['patient_id']!=user['id'] or user['role']=='profissional' and appointment['doctor']!=user['id']:
             raise DomainError('Acesso não permitido.', 403)
+        if db.execute('SELECT 1 FROM encounters WHERE appointment_id=? AND completed_at IS NOT NULL', (ident,)).fetchone():
+            raise DomainError('Consultas realizadas não podem ser canceladas.', 409)
         if appointment['status']=='Confirmado':
             db.execute("UPDATE appointments SET status='Cancelado',cancelled_by=?,cancelled_at=CURRENT_TIMESTAMP WHERE id=?", (user['id'],ident))
             audit(db,user['id'],'appointment.cancel',ident)
@@ -349,3 +368,59 @@ def change_password(user, current, new):
         db.execute('UPDATE users SET password=? WHERE id=?', (hashed,user['id']))
         db.execute('DELETE FROM sessions WHERE user_id=?', (user['id'],))
         audit(db,user['id'],'password.change',user['id'])
+
+
+def encounter(user, ident):
+    require(user, {'profissional'})
+    with connect() as db:
+        row = db.execute('''SELECT a.*,u.email AS owner,e.comment,e.condition,e.referral,
+            e.completed_at,e.updated_at,COALESCE(e.version,0) AS version
+            FROM appointments a JOIN users u ON u.id=a.patient_id
+            LEFT JOIN encounters e ON e.appointment_id=a.id
+            WHERE a.id=? AND a.doctor=?''', (ident,user['id'])).fetchone()
+        if not row:
+            raise DomainError('Atendimento não encontrado.', 404)
+        return dict(row)
+
+
+def save_encounter(user, data):
+    require(user, {'profissional'})
+    ident = data.get('id','')
+    comment = text(data.get('comment',''), 'comentário', 10000)
+    condition = text(data.get('condition',''), 'quadro do paciente', 10000, False)
+    referral = text(data.get('referral',''), 'encaminhamento', 10000, False)
+    complete = data.get('complete') == 'yes'
+    with connect(write=True) as db:
+        appointment = db.execute('SELECT * FROM appointments WHERE id=? AND doctor=?', (ident,user['id'])).fetchone()
+        if not appointment:
+            raise DomainError('Atendimento não encontrado.', 404)
+        if appointment['status'] == 'Cancelado':
+            raise DomainError('Não é possível registrar um atendimento cancelado.', 409)
+        if complete and datetime.fromisoformat(appointment['date']+'T'+appointment['time']) > datetime.now():
+            raise DomainError('A consulta só pode ser marcada como realizada após o horário de início.')
+        old = db.execute('SELECT * FROM encounters WHERE appointment_id=?', (ident,)).fetchone()
+        version = old['version'] if old else 0
+        if str(version) != data.get('version','0'):
+            raise DomainError('O registro foi alterado em outra janela. Recarregue antes de editar.', 409)
+        if old:
+            db.execute('INSERT INTO encounter_revisions(appointment_id,actor,comment,condition,referral,version) VALUES(?,?,?,?,?,?)', (ident,user['id'],old['comment'],old['condition'],old['referral'],version))
+        completed_at = old['completed_at'] if old else None
+        if complete and not completed_at:
+            completed_at = datetime.now().isoformat(timespec='seconds')
+        db.execute('''INSERT INTO encounters(appointment_id,comment,condition,referral,completed_at,version)
+            VALUES(?,?,?,?,?,?) ON CONFLICT(appointment_id) DO UPDATE SET
+            comment=excluded.comment,condition=excluded.condition,referral=excluded.referral,
+            completed_at=excluded.completed_at,version=excluded.version,updated_at=CURRENT_TIMESTAMP''',
+            (ident,comment,condition,referral,completed_at,version+1))
+        audit(db,user['id'],'encounter.complete' if complete else 'encounter.save',ident)
+    return ident
+
+
+def encounter_history(user, query=''):
+    require(user, {'profissional'})
+    with connect() as db:
+        rows = db.execute('''SELECT a.id,a.patient,a.patient_id,a.date,a.time,u.email,e.comment,e.condition,e.referral
+            FROM appointments a JOIN encounters e ON e.appointment_id=a.id JOIN users u ON u.id=a.patient_id
+            WHERE a.doctor=? AND e.completed_at IS NOT NULL ORDER BY a.date DESC,a.time DESC''', (user['id'],)).fetchall()
+    term = query.strip().casefold()
+    return [dict(row) for row in rows if term in row['patient'].casefold() or term in row['email'].casefold()]
