@@ -15,11 +15,10 @@ Se a porta estiver ocupada, use `python app.py --port 8766` e abra http://127.0.
 ## Experimentar
 
 - Entre com qualquer nome, e-mail e senha e escolha um dos quatro perfis. O cadastro também abre a plataforma sem autenticação real.
-- Paciente: alterne a busca por especialidade/nome, escolha uma data e um horário, informe o motivo obrigatório e confirme. Consulte e cancele agendamentos e veja os avisos.
+- Paciente: alterne a busca por especialidade/nome, escolha uma data e um horário, informe o motivo obrigatório e confirme. Consulte e cancele agendamentos.
 - Profissional: representa Marina Costa nesta demonstração. Veja sua agenda, cancele consultas e configure disponibilidade. Bloqueie todos os horários de um dia para ver o estado “Indisponível” ao agendar.
 - Atendente: provisoriamente pode pesquisar, agendar em nome de um paciente e consultar/cancelar os agendamentos. Essa divisão de responsabilidades ainda precisa ser validada.
 - Admin: pode desligar funcionários. Profissionais desligados saem da busca; os agendamentos existentes são preservados. O desligamento é apenas uma alteração nos dados demonstrativos.
-- Para testar avisos: agende como paciente com Marina; saia, entre como profissional e cancele; volte ao paciente usando o mesmo e-mail e abra Avisos.
 
 ## Limites do protótipo
 

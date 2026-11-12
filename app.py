@@ -22,7 +22,6 @@ SPECIALTIES = ['Alergologia', 'Cardiologia', 'Clínica geral', 'Dermatologia', '
 TIMES = [f'{hour:02d}:00' for hour in range(8, 19)]
 TOMORROW = (date.today() + timedelta(days=1)).isoformat()
 APPOINTMENTS = [{'id': 'demo', 'doctor': '1', 'patient': 'Ana Silva', 'owner': 'ana@email.com', 'date': TOMORROW, 'time': '09:00', 'reason': 'Consulta de rotina', 'description': '', 'status': 'Confirmado'}]
-NOTICES = []
 STAFF = [{'id': '1', 'name': 'Marina Costa', 'role': 'Profissional', 'active': True}, {'id': '2', 'name': 'Rafael Mendes', 'role': 'Profissional', 'active': True}, {'id': '3', 'name': 'Beatriz Almeida', 'role': 'Profissional', 'active': True}, {'id': '4', 'name': 'Lucas Oliveira', 'role': 'Atendente', 'active': True}]
 BLOCKED = set()
 ROUTINES = {}
@@ -56,7 +55,7 @@ def field(label, name, kind='text', value='', required=True):
 def page(title, content, user=None, current='', message=''):
     if user:
         role = user['role']
-        menus = {'paciente': [('buscar', '⌕', 'Encontrar profissional'), ('consultas', '▦', 'Meus agendamentos'), ('avisos', '◉', 'Avisos')], 'profissional': [('agenda', '▦', 'Minha agenda'), ('horarios', '◷', 'Disponibilidade')], 'atendente': [('buscar', '⌕', 'Agendar consulta'), ('consultas', '▦', 'Agendamentos')], 'admin': [('equipe', '♧', 'Funcionários')]}
+        menus = {'paciente': [('buscar', '⌕', 'Encontrar profissional'), ('consultas', '▦', 'Meus agendamentos')], 'profissional': [('agenda', '▦', 'Minha agenda'), ('horarios', '◷', 'Disponibilidade')], 'atendente': [('buscar', '⌕', 'Agendar consulta'), ('consultas', '▦', 'Agendamentos')], 'admin': [('equipe', '♧', 'Funcionários')]}
         menus['atendente'].append(('horarios', '◷', 'Horários dos médicos'))
         links = ''.join(f'<a class="nav {"selected" if key == current else ""}" href="/{key}"><span>{icon}</span>{label}</a>' for key, icon, label in menus[role])
         shell = f'<aside><a class="brand" href="/">agend<span>aí</span><i>✳</i></a><div class="workspace">ESPAÇO DO {ROLES[role].upper()}</div><nav>{links}</nav><div class="aside-bottom"><div class="demo-tag">◌ Ambiente de demonstração</div><div class="identity"><b class="mini-avatar">{h(user["name"][:1].upper())}</b><div><strong>{h(user["name"])}</strong><small>{ROLES[role]}</small></div></div><form method="post" action="/sair"><button class="logout">Sair da conta ↗</button></form></div></aside><div class="shell"><header><span>Seu cuidado, bem organizado.</span><span class="header-right">✧ &nbsp; AgendAí <b>MVP</b></span></header><main>{f"<div class=flash role=status>{h(message)}</div>" if message else ""}{content}</main><footer>AgendAí © {date.today().year} <span>Mais tempo para cuidar de você.</span></footer></div>'
@@ -124,7 +123,7 @@ def appointments(user, agenda=False):
         display_name = h(a["patient"]) if agenda or user["role"] == "atendente" else d["name"]
         content += f'<article class="appointment"><div class="date-tile"><strong>{a["date"][-2:]}</strong><small>{fmt(a["date"])[3:10]}</small></div><img class="appointment-photo" src="/static/doctors/{d["photo"]}" alt=""><div class="appointment-detail"><h3>{display_name}</h3><p>{d["specialty"]} · <b>{a["time"]}</b> · {fmt(a["date"])}</p><p><b>Motivo:</b> {h(a["reason"])}</p>{description}</div><div class="appointment-actions"><span class="status {"cancelled" if a["status"] != "Confirmado" else ""}">{a["status"]}</span>'
         if a['status'] == 'Confirmado':
-            content += f'<form method="post" action="/cancelar"><input type="hidden" name="id" value="{a["id"]}"><button class="danger" onclick="return confirm(\'Cancelar esta consulta? O paciente receberá um aviso.\')">Cancelar consulta</button></form>'
+            content += f'<form method="post" action="/cancelar"><input type="hidden" name="id" value="{a["id"]}"><button class="danger" onclick="return confirm(\'Cancelar esta consulta?\')">Cancelar consulta</button></form>'
         content += '</div></article>'
     return content + ('' if items else '<div class="empty">◷<h3>Sua agenda começa aqui.</h3><p>Os agendamentos aparecerão neste espaço.</p></div>') + '</section>'
 
@@ -245,7 +244,7 @@ class Handler(BaseHTTPRequestHandler):
         if not user: return self.send(login(path == '/cadastro'))
         home = {'paciente': 'buscar', 'profissional': 'agenda', 'atendente': 'buscar', 'admin': 'equipe'}[user['role']]
         if path == '/': return self.redirect('/' + home)
-        allowed = {'paciente': ['buscar', 'agendar', 'consultas', 'avisos'], 'profissional': ['agenda', 'horarios'], 'atendente': ['buscar', 'agendar', 'consultas'], 'admin': ['equipe']}[user['role']]
+        allowed = {'paciente': ['buscar', 'agendar', 'consultas'], 'profissional': ['agenda', 'horarios'], 'atendente': ['buscar', 'agendar', 'consultas'], 'admin': ['equipe']}[user['role']]
         if user['role'] == 'atendente': allowed.append('horarios')
         key = path.strip('/')
         if key not in allowed: return self.redirect('/' + home)
@@ -254,9 +253,6 @@ class Handler(BaseHTTPRequestHandler):
         elif key == 'agenda': content = professional_calendar(user, q)
         elif key == 'consultas': content = staff_view(user, q, 'consultas') if user['role'] == 'atendente' else appointments(user)
         elif key == 'horarios': content = staff_view(user, q, 'horarios') if user['role'] == 'atendente' else availability(user, q)
-        elif key == 'avisos':
-            notices = [n for n in NOTICES if n['owner'] == user['email']]
-            content = heading('FIQUE POR DENTRO', 'Seus avisos', 'As atualizações dos seus agendamentos ficam aqui.') + '<section class="panel">' + (''.join(f'<article class="notice"><span>◉</span><div><h3>Consulta cancelada</h3><p>{h(n["text"])}</p></div></article>' for n in reversed(notices)) or '<div class="empty">Tudo em dia.<p>Você ainda não tem avisos de cancelamento.</p></div>') + '</section>'
         else:
             content = heading('ADMINISTRAÇÃO', 'Funcionários', 'Cadastre profissionais e atendentes e gerencie sua equipe.')
             content += '<section class="panel"><h2>Cadastrar funcionário</h2><form method="post" action="/funcionarios">'
@@ -309,8 +305,7 @@ class Handler(BaseHTTPRequestHandler):
             if not a or not (user['role'] == 'atendente' or user['role'] == 'profissional' and a['doctor'] == user['doctor'] or user['role'] == 'paciente' and a['owner'] == user['email']): return self.send('Acesso não permitido', 403)
             if a['status'] == 'Confirmado':
                 a['status'] = 'Cancelado'
-                NOTICES.append({'owner': a['owner'], 'text': f'Sua consulta com {doctor(a["doctor"])["name"]}, em {fmt(a["date"])} às {a["time"]}, foi cancelada. Você pode escolher um novo horário.'})
-            user['message'] = 'Consulta cancelada. Um aviso foi enviado à área do paciente.'
+            user['message'] = 'Consulta cancelada.'
             return self.redirect('/agenda' if user['role'] == 'profissional' else f'/consultas?doctor={a["doctor"]}' if user['role'] == 'atendente' else '/consultas')
         if path == '/horarios' and user['role'] in ['profissional', 'atendente']:
             day = get('date'); date.fromisoformat(day)
