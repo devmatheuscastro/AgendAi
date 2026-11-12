@@ -438,22 +438,30 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     import argparse
+    import os
     parser = argparse.ArgumentParser(description='Iniciar AgendAí')
     parser.add_argument('--port', type=int, default=8765)
     args = parser.parse_args()
+
+    host = os.getenv('HOST', '0.0.0.0')
+    port = int(os.getenv('PORT', args.port))
+
     try:
         backend.initialize()
         initial_password = backend.seed_demo()
     except (backend.DatabaseError, ValueError):
         raise SystemExit('Não foi possível conectar ao PostgreSQL. Confira o .env e se o banco está iniciado. Consulte README.md.')
+
     if initial_password:
         print('Banco criado. Senha inicial de admin e paciente de exemplo:', initial_password, flush=True)
         print('Admin: admin@agendai.com — guarde a senha antes de fechar este terminal.', flush=True)
+
     try:
-        server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
+        server = ThreadingHTTPServer((host, port), Handler)
     except OSError as exc:
-        raise SystemExit(f'Não foi possível iniciar na porta {args.port}: {exc}. Tente --port 8766')
-    print(f'AgendAí disponível em http://127.0.0.1:{args.port} — Ctrl+C para encerrar.', flush=True)
+        raise SystemExit(f'Não foi possível iniciar na porta {port}: {exc}. Tente --port 8766')
+
+    print(f'AgendAí disponível em http://{host}:{port} — Ctrl+C para encerrar.', flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
