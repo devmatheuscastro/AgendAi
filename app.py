@@ -7,22 +7,26 @@ from html import escape
 from pathlib import Path
 from threading import RLock
 import secrets
+import calendar
 
 ROOT = Path(__file__).parent
 LOCK = RLock()
 SESSIONS = {}
 ROLES = {'paciente': 'Paciente', 'profissional': 'Profissional', 'atendente': 'Atendente', 'admin': 'Admin'}
 DOCTORS = [
-    {'id': '1', 'name': 'Marina Costa', 'specialty': 'Cardiologia', 'initials': 'MC', 'color': 'rose', 'price': '280'},
-    {'id': '2', 'name': 'Rafael Mendes', 'specialty': 'Clínica geral', 'initials': 'RM', 'color': 'blue', 'price': '180'},
-    {'id': '3', 'name': 'Beatriz Almeida', 'specialty': 'Dermatologia', 'initials': 'BA', 'color': 'sand', 'price': '250'},
+    {'id': '1', 'name': 'Marina Costa', 'specialty': 'Cardiologia', 'initials': 'MC', 'color': 'rose', 'photo': 'marina.png', 'price': '280'},
+    {'id': '2', 'name': 'Rafael Mendes', 'specialty': 'Clínica geral', 'initials': 'RM', 'color': 'blue', 'photo': 'rafael.png', 'price': '180'},
+    {'id': '3', 'name': 'Beatriz Almeida', 'specialty': 'Dermatologia', 'initials': 'BA', 'color': 'sand', 'photo': 'beatriz.png', 'price': '250'},
 ]
-TIMES = ['08:00', '09:00', '10:00', '11:00', '14:00', '15:00', '16:00', '17:00']
+SPECIALTIES = ['Alergologia', 'Cardiologia', 'Clínica geral', 'Dermatologia', 'Endocrinologia', 'Fisioterapia', 'Ginecologia', 'Neurologia', 'Nutrição', 'Oftalmologia', 'Ortopedia', 'Otorrinolaringologia', 'Pediatria', 'Psicologia', 'Psiquiatria', 'Urologia']
+TIMES = [f'{hour:02d}:00' for hour in range(8, 19)]
 TOMORROW = (date.today() + timedelta(days=1)).isoformat()
 APPOINTMENTS = [{'id': 'demo', 'doctor': '1', 'patient': 'Ana Silva', 'owner': 'ana@email.com', 'date': TOMORROW, 'time': '09:00', 'reason': 'Consulta de rotina', 'description': '', 'status': 'Confirmado'}]
 NOTICES = []
 STAFF = [{'id': '1', 'name': 'Marina Costa', 'role': 'Profissional', 'active': True}, {'id': '2', 'name': 'Rafael Mendes', 'role': 'Profissional', 'active': True}, {'id': '3', 'name': 'Beatriz Almeida', 'role': 'Profissional', 'active': True}, {'id': '4', 'name': 'Lucas Oliveira', 'role': 'Atendente', 'active': True}]
 BLOCKED = set()
+ROUTINES = {}
+DAY_HOURS = {}
 
 
 def h(value):
@@ -38,7 +42,7 @@ def active_doctors():
 
 
 def occupied(doc, day, hour):
-    return (doc, day, hour) in BLOCKED or any(a['doctor'] == doc and a['date'] == day and a['time'] == hour and a['status'] == 'Confirmado' for a in APPOINTMENTS)
+    return hour not in DAY_HOURS.get((doc, day), ROUTINES.get(doc, TIMES)) or any(a['doctor'] == doc and a['date'] == day and a['time'] == hour and a['status'] == 'Confirmado' for a in APPOINTMENTS)
 
 
 def fmt(day):
@@ -74,11 +78,13 @@ def search(user, query):
     term = query.get('q', [''])[0]
     mode = query.get('mode', ['specialty'])[0]
     docs = [d for d in active_doctors() if term.casefold() in d['name' if mode == 'name' else 'specialty'].casefold()]
+    specialty_options = ''.join(f'<option value="{h(s)}">' for s in SPECIALTIES)
+    specialty_text = ' · '.join(SPECIALTIES)
     content = heading('SEU PRÓXIMO CUIDADO', f'Olá, {h(user["name"].split()[0])} <span class="wave">✳</span>', 'Encontre o profissional certo e reserve um tempo para você.')
     content += '<section class="hero"><div><span class="pill">CUIDAR COMEÇA COM UM ENCONTRO</span><h2>O cuidado que você precisa,<br>no horário que funciona.</h2><p>Profissionais de saúde e uma agenda mais simples.<br>Seu próximo atendimento começa aqui.</p></div><div class="hero-art">✳<span class="art-badge">♡ &nbsp; Sua saúde em primeiro lugar</span></div></section>'
-    content += f'<section class="panel search-panel"><form method="get" action="/buscar"><div class="search-top"><h3>Encontre seu profissional</h3><div class="toggle"><label><input type="radio" name="mode" value="specialty" {"checked" if mode != "name" else ""}> Especialidade</label><label><input type="radio" name="mode" value="name" {"checked" if mode == "name" else ""}> Nome do médico</label></div></div><div class="search-line"><input aria-label="Buscar profissional" name="q" value="{h(term)}" placeholder="⌕  Busque por especialidade ou nome..."><button class="primary">Buscar profissional →</button></div></form></section><div class="section-title"><h2>Profissionais disponíveis</h2><span class="muted">{len(docs)} profissionais encontrados</span></div><div class="doctor-grid">'
+    content += f'<section class="panel search-panel"><form method="get" action="/buscar"><div class="search-top"><h3>Encontre seu profissional</h3><div class="toggle"><label><input type="radio" name="mode" value="specialty" {"checked" if mode != "name" else ""}> Especialidade</label><label><input type="radio" name="mode" value="name" {"checked" if mode == "name" else ""}> Nome do médico</label></div></div><div class="search-line"><input list="specialties" aria-label="Buscar profissional" name="q" value="{h(term)}" placeholder="⌕  Busque por especialidade ou nome..."><datalist id="specialties">{specialty_options}</datalist><button class="primary">Buscar profissional →</button></div><div class="specialty-list"><span>Especialidades:</span> {specialty_text}</div></form></section><div class="section-title"><h2>Profissionais disponíveis</h2><span class="muted">{len(docs)} profissionais encontrados</span></div><div class="doctor-grid">'
     for d in docs:
-        content += f'<article class="panel doctor-card"><div class="doctor-top"><div class="avatar {d["color"]}">{d["initials"]}</div><span class="available">● Agenda aberta</span></div><h3>{"Dr." if d["id"] == "2" else "Dra."} {d["name"]}</h3><p class="specialty">{d["specialty"]}</p><div class="doctor-meta">✧ Atendimento presencial<br>⌖ São Paulo, SP</div><div class="doctor-price"><span>Consulta a partir de<strong>R$ {d["price"]},00</strong></span><span class="muted">Particular</span></div><a class="outline wide" href="/agendar?doctor={d["id"]}">Ver horários disponíveis <span>↗</span></a></article>'
+        content += f'<article class="panel doctor-card"><div class="doctor-top"><img class="doctor-photo" src="/static/doctors/{d["photo"]}" alt="Foto de {h(d["name"])}"><span class="available">● Agenda aberta</span></div><h3>{"Dr." if d["id"] == "2" else "Dra."} {d["name"]}</h3><p class="specialty">{d["specialty"]}</p><div class="doctor-meta">✧ Atendimento presencial<br>⌖ São Paulo, SP</div><div class="doctor-price"><span>Consulta a partir de<strong>R$ {d["price"]},00</strong></span><span class="muted">Particular</span></div><a class="outline wide" href="/agendar?doctor={d["id"]}">Escolher horário <span>→</span></a></article>'
     return content + ('</div>' if docs else '</div><div class="empty">Nenhum profissional encontrado. Tente outra busca.</div>')
 
 
@@ -90,13 +96,17 @@ def booking(user, query):
     except ValueError:
         day = TOMORROW
     date_field = field('Data da consulta', 'date', 'date', day)
+    date_field = date_field.replace('>', ' onchange="this.form.submit()">', 1)
     full = all(occupied(d['id'], day, t) for t in TIMES)
     content = heading('AGENDAR CONSULTA', 'Um horário para cuidar de você.', 'Escolha a data, o horário e conte o motivo do atendimento.', '<a class="text-link" href="/buscar">← Voltar à busca</a>')
-    content += f'<div class="booking-layout"><section class="panel profile"><div class="avatar large {d["color"]}">{d["initials"]}</div><h2>{d["name"]}</h2><p class="specialty">{d["specialty"]}</p><hr><p>⌖ Atendimento presencial · São Paulo</p><p>◷ Duração estimada: 50 minutos</p><h3>R$ {d["price"]},00</h3><p class="muted">Consulta particular</p></section><section class="panel"><h2>Escolha seu horário</h2><form method="get" action="/agendar"><input type="hidden" name="doctor" value="{d["id"]}">{date_field}<button class="outline">Consultar disponibilidade</button></form><h3 class="{ "unavailable" if full else "" }">{"Indisponível" if full else "Horários disponíveis"} · {fmt(day)}</h3><form method="post" action="/agendar"><input type="hidden" name="doctor" value="{d["id"]}"><input type="hidden" name="date" value="{day}"><div class="slots">'
+    content += f'<div class="booking-layout"><section class="panel profile"><img class="profile-photo" src="/static/doctors/{d["photo"]}" alt="Foto de {h(d["name"])}"><h2>{d["name"]}</h2><p class="specialty">{d["specialty"]}</p><hr><p>⌖ Atendimento presencial · São Paulo</p><p>◷ Duração estimada: 50 minutos</p><h3>R$ {d["price"]},00</h3><p class="muted">Consulta particular</p></section><section class="panel"><div class="schedule-head"><div><h2>Escolha um horário</h2><p class="muted">Os horários livres aparecem abaixo.</p></div></div><form method="get" action="/agendar"><input type="hidden" name="doctor" value="{d["id"]}">{date_field}</form><h3 class="{ "unavailable" if full else "" }">{"Indisponível" if full else "Horários disponíveis"} · {fmt(day)}</h3><form method="post" action="/agendar"><input type="hidden" name="doctor" value="{d["id"]}"><input type="hidden" name="date" value="{day}"><div class="slots">'
     for t in TIMES:
         busy = occupied(d['id'], day, t)
-        content += f'<label class="slot {"busy" if busy else ""}"><input type="radio" name="time" value="{t}" required {"disabled" if busy else ""}><span>{t}</span></label>'
-    content += '</div>'
+        booked = any(a['doctor'] == d['id'] and a['date'] == day and a['time'] == t and a['status'] == 'Confirmado' for a in APPOINTMENTS)
+        state = 'reserved' if booked else 'blocked' if busy else 'free'
+        caption = 'Agendado' if booked else 'Não atende' if busy else 'Disponível'
+        content += f'<label class="slot {state}"><input type="radio" name="time" value="{t}" required {"disabled" if busy else ""}><span>{t}<small>{caption}</small></span></label>'
+    content += '</div><p class="slot-legend">🟢 Disponível · 🟡 Médico não atende · 🔴 Já agendado</p>'
     if user['role'] == 'atendente': content += field('Nome do paciente', 'patient') + field('E-mail do paciente', 'patient_email', 'email')
     content += field('Motivo da consulta *', 'reason') + '<label>Descrição <span class="muted">(opcional)</span><textarea name="description" rows="3" placeholder="Se desejar, acrescente informações sobre o atendimento."></textarea></label><button class="primary wide" '+('disabled' if full else '')+'>Confirmar agendamento →</button></form></section></div>'
     return content
@@ -110,11 +120,47 @@ def appointments(user, agenda=False):
     for a in sorted(items, key=lambda a: (a['date'], a['time'])):
         d = doctor(a['doctor'])
         description = '<p>' + h(a['description']) + '</p>' if a['description'] else ''
-        content += f'<article class="appointment"><div class="date-tile"><strong>{a["date"][-2:]}</strong><small>{fmt(a["date"])[3:10]}</small></div><div class="appointment-detail"><h3>{h(a["patient"]) if agenda or user["role"] == "atendente" else d["name"]}</h3><p>{d["specialty"]} · {a["time"]} · {fmt(a["date"])}</p><p><b>Motivo:</b> {h(a["reason"])}</p>{description}</div><div class="appointment-actions"><span class="status {"cancelled" if a["status"] != "Confirmado" else ""}">{a["status"]}</span>'
+        display_name = h(a["patient"]) if agenda or user["role"] == "atendente" else d["name"]
+        content += f'<article class="appointment"><div class="date-tile"><strong>{a["date"][-2:]}</strong><small>{fmt(a["date"])[3:10]}</small></div><img class="appointment-photo" src="/static/doctors/{d["photo"]}" alt=""><div class="appointment-detail"><h3>{display_name}</h3><p>{d["specialty"]} · <b>{a["time"]}</b> · {fmt(a["date"])}</p><p><b>Motivo:</b> {h(a["reason"])}</p>{description}</div><div class="appointment-actions"><span class="status {"cancelled" if a["status"] != "Confirmado" else ""}">{a["status"]}</span>'
         if a['status'] == 'Confirmado':
             content += f'<form method="post" action="/cancelar"><input type="hidden" name="id" value="{a["id"]}"><button class="danger" onclick="return confirm(\'Cancelar esta consulta? O paciente receberá um aviso.\')">Cancelar consulta</button></form>'
         content += '</div></article>'
     return content + ('' if items else '<div class="empty">◷<h3>Sua agenda começa aqui.</h3><p>Os agendamentos aparecerão neste espaço.</p></div>') + '</section>'
+
+
+def professional_calendar(user, query):
+    try:
+        selected = date.fromisoformat(query.get('date', [date.today().isoformat()])[0])
+    except ValueError:
+        selected = date.today()
+    month = selected.replace(day=1)
+    previous = month - timedelta(days=1)
+    following = (month + timedelta(days=32)).replace(day=1)
+    months = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+    items = [a for a in APPOINTMENTS if a['doctor'] == user['doctor'] and a['status'] == 'Confirmado']
+    content = heading('SUA ROTINA, MAIS ORGANIZADA', 'Minha agenda', 'Selecione um dia no calendário para acompanhar seus atendimentos.', '<a class="primary" href="/horarios">Configurar horários</a>')
+    content += f'<div class="calendar-layout"><section class="panel"><div class="calendar-heading"><a class="outline" aria-label="Mês anterior" href="/agenda?date={previous.isoformat()}">←</a><h2>{months[month.month-1]} {month.year}</h2><a class="outline" aria-label="Próximo mês" href="/agenda?date={following.isoformat()}">→</a></div><div class="calendar-grid">'
+    content += ''.join(f'<b class="weekday">{name}</b>' for name in ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'])
+    for week in calendar.Calendar().monthdatescalendar(month.year, month.month):
+        for day in week:
+            count = sum(a['date'] == day.isoformat() for a in items)
+            classes = 'calendar-day' + (' outside' if day.month != month.month else '') + (' has-appointments' if count else '') + (' chosen' if day == selected else '') + (' today' if day == date.today() else '')
+            marker = f'<small>{count} consulta'+('s' if count != 1 else '')+'</small>' if count else '<small>Sem consultas</small>'
+            content += f'<a class="{classes}" href="/agenda?date={day.isoformat()}" aria-label="{fmt(day.isoformat())}, {count} consultas"><strong>{day.day}</strong>{marker}</a>'
+    content += '</div><p class="muted">● Dias em verde têm consultas confirmadas. O contorno indica hoje.</p></section>'
+    day_items = [a for a in items if a['date'] == selected.isoformat()]
+    content += f'<section class="panel day-schedule"><div class="eyebrow">ATENDIMENTOS DO DIA</div><h2>{fmt(selected.isoformat())}</h2><p class="muted">{len(day_items)} consulta(s) confirmada(s)</p>'
+    for hour in TIMES:
+        appointment = next((a for a in day_items if a['time'] == hour), None)
+        if appointment:
+            content += f'<article class="agenda-hour reserved"><strong>{hour}</strong><div><h3>{h(appointment["patient"])}</h3><p>{h(appointment["reason"])}</p>'
+            if appointment['description']:
+                content += f'<p>{h(appointment["description"])}</p>'
+            content += f'<form method="post" action="/cancelar"><input type="hidden" name="id" value="{appointment["id"]}"><button class="danger" onclick="return confirm(\'Cancelar esta consulta?\')">Cancelar consulta</button></form></div></article>'
+        else:
+            free = not occupied(user['doctor'], selected.isoformat(), hour)
+            content += f'<article class="agenda-hour {"free" if free else "blocked"}"><strong>{hour}</strong><span>{"Disponível" if free else "Não atende"}</span></article>'
+    return content + '</section></div>'
 
 
 def availability(user, query):
@@ -122,12 +168,21 @@ def availability(user, query):
     try: date.fromisoformat(day)
     except ValueError: day = TOMORROW
     doc = user['doctor']
+    routine = query.get('scope', ['day'])[0] == 'routine'
+    scope = 'routine' if routine else 'day'
+    selected = ROUTINES.get(doc, TIMES) if routine else DAY_HOURS.get((doc, day), ROUTINES.get(doc, TIMES))
     content = heading('SUA AGENDA, DO SEU JEITO', 'Disponibilidade', 'Selecione os horários que deseja disponibilizar. Consultas existentes são preservadas.')
-    content += f'<section class="panel"><form method="get" action="/horarios">{field("Dia", "date", "date", day)}<button class="outline">Visualizar dia</button></form><h3>{fmt(day)}</h3><form method="post" action="/horarios"><input type="hidden" name="date" value="{day}"><div class="slots">'
+    content += f'<section class="panel"><div class="search-line"><a class="outline" href="/horarios?scope=routine">Rotina para todos os dias</a><a class="outline" href="/horarios?date={day}">Ajustar um dia específico</a></div>'
+    if not routine:
+        content += f'<form method="get" action="/horarios"><label>Dia<input type="date" name="date" value="{day}" required onchange="this.form.submit()"></label></form>'
+    title = 'Carga horária diária' if routine else 'Horários de atendimento'
+    explanation = 'Estes horários se repetem todos os dias. Ajustes de datas específicas têm prioridade. Consultas já marcadas são mantidas.' if routine else 'Esta alteração vale apenas para a data escolhida. Nos demais dias, vale a rotina do médico.'
+    content += f'<h3>{title}</h3><p class="muted">{explanation}</p><form method="post" action="/horarios"><input type="hidden" name="scope" value="{scope}"><input type="hidden" name="date" value="{day}"><div class="slots">'
     for t in TIMES:
-        booked = any(a['doctor'] == doc and a['date'] == day and a['time'] == t and a['status'] == 'Confirmado' for a in APPOINTMENTS)
-        content += f'<label class="slot availability"><input type="checkbox" name="available" value="{t}" {"checked" if (doc, day, t) not in BLOCKED else ""} {"disabled" if booked else ""}><span>{t}{" · Agendado" if booked else ""}</span></label>'
-    return content + '</div><p class="muted">Marcado = disponível · Desmarcado = bloqueado</p><button class="primary">Salvar disponibilidade</button></form></section>'
+        booked = not routine and any(a['doctor'] == doc and a['date'] == day and a['time'] == t and a['status'] == 'Confirmado' for a in APPOINTMENTS)
+        state = 'reserved' if booked else ''
+        content += f'<label class="slot availability {state}"><input type="checkbox" name="available" value="{t}" {"checked" if t in selected else ""} {"disabled" if booked else ""}><span>{t}<small>{"Agendado" if booked else ""}</small></span></label>'
+    return content + '</div><p class="slot-legend">🟢 Disponível · 🟡 Médico não atende · 🔴 Já agendado</p><p class="muted">Clique nos horários para alternar sua disponibilidade e salve. Consultas agendadas não podem ser alteradas aqui.</p><button class="primary">Salvar disponibilidade</button></form></section>'
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -148,7 +203,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         q = parse_qs(urlparse(self.path).query)
-        if path == '/static/style.css': return self.send((ROOT / 'static/style.css').read_bytes(), mime='text/css; charset=utf-8')
+        if path.startswith('/static/'):
+            asset = ROOT / path.lstrip('/')
+            if asset.exists() and asset.is_file():
+                mime = 'text/css; charset=utf-8' if asset.suffix == '.css' else 'image/png'
+                return self.send(asset.read_bytes(), mime=mime)
+            return self.send('Not found', 404)
         user = self.user()
         if not user: return self.send(login(path == '/cadastro'))
         home = {'paciente': 'buscar', 'profissional': 'agenda', 'atendente': 'buscar', 'admin': 'equipe'}[user['role']]
@@ -158,7 +218,8 @@ class Handler(BaseHTTPRequestHandler):
         if key not in allowed: return self.redirect('/' + home)
         if key == 'buscar': content = search(user, q)
         elif key == 'agendar': content = booking(user, q)
-        elif key in ['agenda', 'consultas']: content = appointments(user, key == 'agenda')
+        elif key == 'agenda': content = professional_calendar(user, q)
+        elif key == 'consultas': content = appointments(user)
         elif key == 'horarios': content = availability(user, q)
         elif key == 'avisos':
             notices = [n for n in NOTICES if n['owner'] == user['email']]
@@ -215,12 +276,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.redirect('/agenda' if user['role'] == 'profissional' else '/consultas')
         if path == '/horarios' and user['role'] == 'profissional':
             day = get('date'); date.fromisoformat(day)
-            for t in TIMES:
-                key = (user['doctor'], day, t)
-                booked = any(a['doctor'] == user['doctor'] and a['date'] == day and a['time'] == t and a['status'] == 'Confirmado' for a in APPOINTMENTS)
-                if t in data.get('available', []) or booked: BLOCKED.discard(key)
-                else: BLOCKED.add(key)
-            user['message'] = 'Disponibilidade atualizada.'
+            selected = set(data.get('available', [])) & set(TIMES)
+            if get('scope') == 'routine':
+                ROUTINES[user['doctor']] = selected
+                user['message'] = 'Carga horária salva para todos os dias. Exceções de datas específicas e consultas existentes foram mantidas.'
+                return self.redirect('/horarios?scope=routine')
+            selected.update(a['time'] for a in APPOINTMENTS if a['doctor'] == user['doctor'] and a['date'] == day and a['status'] == 'Confirmado')
+            DAY_HOURS[(user['doctor'], day)] = selected
+            user['message'] = 'Disponibilidade atualizada para este dia.'
             return self.redirect(f'/horarios?date={day}')
         if path == '/demitir' and user['role'] == 'admin':
             s = next(s for s in STAFF if s['id'] == get('id'))
