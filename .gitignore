@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
 .venv/
+.env
+.env.*
+!.env.example
+backups/
 server.log
 server-error.log
 data/

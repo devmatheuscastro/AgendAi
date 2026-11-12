@@ -1,17 +1,65 @@
 # AgendAí
 
-Plataforma web em Python 3.10+ com SQLite. Usa apenas a biblioteca padrão; não precisa instalar pacotes.
+Plataforma web em Python 3.10+ com PostgreSQL 14 ou superior. Usa Psycopg 3 para conexão e python-dotenv para ler a configuração.
 
-## Executar
+## Preparar o PostgreSQL
+
+No pgAdmin, conectado ao banco `postgres` como administrador, execute os comandos de [sql/create_database.sql](sql/create_database.sql), um por vez. Substitua a senha de exemplo. O comando `CREATE DATABASE` deve ser executado fora de uma transação.
+
+```sql
+CREATE ROLE agendai WITH LOGIN PASSWORD 'sua_senha';
+CREATE DATABASE agendai OWNER agendai ENCODING 'UTF8';
+```
+
+Se já possui um banco e usuário, use-os na configuração abaixo; não precisa criá-los novamente.
+
+## Configurar e executar
 
 ```powershell
 cd C:\Users\Matheus\Desktop\AgendAi
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Copie o exemplo apenas se ainda não tiver `.env`. Edite esse arquivo com o host, porta, banco, usuário e senha do seu PostgreSQL:
+
+```dotenv
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_NAME=agendai
+DB_USER=agendai
+DB_PASSWORD=sua_senha
+DB_SSLMODE=prefer
+```
+
+Alternativamente, use `DATABASE_URL=postgresql://usuario:senha@host:5432/banco`. A URL tem prioridade sobre `DB_*`; caracteres especiais da senha precisam ser codificados na URL. Com `DB_PASSWORD`, não é necessário codificá-los. Variáveis do sistema têm prioridade sobre `.env`. O arquivo é lido pelo caminho do projeto, mesmo executando de outra pasta, e não entra no Git.
+
+Para criar todas as tabelas e inicializar as contas:
+
+```powershell
+.\.venv\Scripts\python.exe manage.py init-db
+.\.venv\Scripts\python.exe app.py
+```
+
+O SQL completo das tabelas está em [sql/schema.sql](sql/schema.sql). Também pode executá-lo manualmente no Query Tool do pgAdmin, conectado ao banco `agendai` como seu proprietário. Pelo terminal, se `psql` estiver no PATH:
+
+```powershell
+psql -h 127.0.0.1 -p 5432 -U agendai -d agendai -W -v ON_ERROR_STOP=1 -f sql/schema.sql
+```
+
+O servidor aplica esse mesmo script ao iniciar; as instruções são idempotentes e não apagam dados. O usuário precisa ter permissão para criar tabelas no banco.
+
+Se preferir o comando curto, ative o ambiente virtual antes:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
 python app.py
 ```
 
 Abra http://127.0.0.1:8765. Mantenha o terminal aberto. Ctrl+C encerra o servidor. Para outra porta: `python app.py --port 8766`.
 
-Na primeira execução, o banco é criado e uma **senha inicial aleatória** aparece no terminal para as seis contas de exemplo. Guarde-a e altere-a em **Alterar senha**. Ela não é exibida nas próximas execuções.
+Na primeira inicialização de um banco vazio, as contas de exemplo são criadas. Uma **senha inicial aleatória** para admin e paciente aparece no terminal. Guarde-a e altere-a em **Alterar senha**. Ela não é exibida nas próximas execuções.
 
 | Perfil | E-mail |
 |---|---|
@@ -22,7 +70,7 @@ Na primeira execução, o banco é criado e uma **senha inicial aleatória** apa
 | Atendente | atendente@agendai.com |
 | Paciente — Ana | ana@email.com |
 
-O perfil é identificado pela conta. Profissionais e atendentes começam com a senha `SenhaPadraoFunc` e podem trocá-la em **Alterar senha**. Essa senha também é aplicada uma única vez aos funcionários anteriores; trocas posteriores são preservadas. Admin e paciente de exemplo usam a senha aleatória exibida na primeira execução. Cadastros exigem entre 8 e 128 caracteres. Dados antigos que existiam apenas na memória não são migrados.
+O perfil é identificado pela conta. Profissionais e atendentes começam com a senha `SenhaPadraoFunc` e podem trocá-la em **Alterar senha**. Trocas posteriores são preservadas. Cadastros exigem entre 8 e 128 caracteres.
 
 ## Funcionalidades
 
@@ -41,29 +89,37 @@ O perfil é identificado pela conta. Profissionais e atendentes começam com a s
 
 ## Dados e manutenção
 
-O banco fica em `data/agendai.sqlite3`. Contas, consultas, disponibilidade e sessões válidas sobrevivem ao reinício. A pasta `data/` não entra no Git. Não a apague para atualizar o programa.
+Os dados ficam no servidor PostgreSQL configurado no `.env`. Contas, consultas, disponibilidade e sessões válidas sobrevivem ao reinício da aplicação. As tabelas podem ser consultadas pelo pgAdmin ou `psql`.
+
+O arquivo SQLite antigo em `data/agendai.sqlite3` foi preservado, mas não é mais usado. Os dados dele **não são transferidos automaticamente** para PostgreSQL. `AGENDAI_DB` deixou de ser utilizado.
 
 Backup consistente, mesmo com o servidor aberto:
 
 ```powershell
-python manage.py backup
+.\.venv\Scripts\python.exe manage.py backup
 ```
 
-As cópias ficam em `data/backups/`. Para restaurar, encerre o servidor e restaure a cópia com uma ferramenta SQLite, preservando primeiro o banco atual. Use o comando de backup: copiar apenas o arquivo principal com o servidor aberto pode omitir alterações do WAL.
+As cópias ficam em `backups/`, no formato customizado do `pg_dump`. Adicione a pasta `bin` do PostgreSQL ao PATH (neste computador: `C:\Program Files\PostgreSQL\18\bin`). Use `pg_dump` da mesma versão principal ou mais recente que o servidor. A senha é enviada pela variável de ambiente do subprocesso, não como argumento do comando.
+
+Para restaurar em um banco vazio, use `pg_restore -h 127.0.0.1 -U agendai -d banco_destino -W backups/arquivo.dump`. Preserve os dados atuais antes de uma restauração.
 
 Se esquecer a senha, o responsável com acesso ao computador pode redefini-la pelo terminal. A senha é solicitada sem aparecer na tela:
 
 ```powershell
-python manage.py reset-password admin@agendai.com
+.\.venv\Scripts\python.exe manage.py reset-password admin@agendai.com
 ```
 
-O banco pode ser configurado pela variável `AGENDAI_DB`. Datas e horários usam o relógio local do computador da clínica; configure-o para São Paulo.
+Datas de consultas e horários da clínica usam o relógio local do computador; configure-o para São Paulo. Timestamps de auditoria são armazenados como `TIMESTAMPTZ`, com conexões em UTC.
 
 ## Estrutura
 
 - `app.py`: servidor local, rotas e telas.
 - `backend.py`: banco, autenticação, permissões e regras de negócio.
 - `manage.py`: backup e recuperação local de senha.
+- `config.py`: leitura do `.env` e configuração PostgreSQL.
+- `sql/create_database.sql`: criação do usuário e banco.
+- `sql/schema.sql`: tabelas, relacionamentos e índices.
+- `.env.example`: exemplo de configuração sem credenciais reais.
 - `static/`: estilos e retratos fictícios.
 
 ## Escopo

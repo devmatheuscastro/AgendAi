@@ -1,4 +1,4 @@
-"""AgendAí — aplicação web local com persistência SQLite."""
+"""AgendAí — aplicação web local com persistência PostgreSQL."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from http.cookies import SimpleCookie
@@ -10,7 +10,6 @@ import secrets
 import calendar
 import backend
 import re
-import sqlite3
 import logging
 
 ROOT = Path(__file__).parent
@@ -370,7 +369,7 @@ class Handler(BaseHTTPRequestHandler):
             try: self.post()
             except backend.DomainError as exc: self.error(str(exc), exc.status)
             except (ValueError, KeyError): self.error('Confira os dados informados.')
-            except sqlite3.Error:
+            except backend.DatabaseError:
                 logging.exception('Erro de banco de dados')
                 self.error('Não foi possível salvar. Tente novamente.', 503)
             except Exception:
@@ -442,9 +441,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Iniciar AgendAí')
     parser.add_argument('--port', type=int, default=8765)
     args = parser.parse_args()
-    backend.initialize()
-    initial_password = backend.seed_demo()
-    backend.apply_employee_initial_password()
+    try:
+        backend.initialize()
+        initial_password = backend.seed_demo()
+    except (backend.DatabaseError, ValueError):
+        raise SystemExit('Não foi possível conectar ao PostgreSQL. Confira o .env e se o banco está iniciado. Consulte README.md.')
     if initial_password:
         print('Banco criado. Senha inicial de admin e paciente de exemplo:', initial_password, flush=True)
         print('Admin: admin@agendai.com — guarde a senha antes de fechar este terminal.', flush=True)
