@@ -1,4 +1,4 @@
-"""AgendAí — MVP local, feito com a biblioteca padrão do Python."""
+"""AgendAí — aplicação web local com persistência SQLite."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from http.cookies import SimpleCookie
@@ -8,27 +8,20 @@ from pathlib import Path
 from threading import RLock
 import secrets
 import calendar
+import backend
+import re
+import sqlite3
+import logging
 
 ROOT = Path(__file__).parent
 LOCK = RLock()
 SESSIONS = {}
 ROLES = {'paciente': 'Paciente', 'profissional': 'Profissional', 'atendente': 'Atendente', 'admin': 'Admin'}
-DOCTORS = [
-    {'id': '1', 'name': 'Marina Costa', 'specialty': 'Cardiologia', 'initials': 'MC', 'color': 'rose', 'photo': 'marina.png', 'price': '280'},
-    {'id': '2', 'name': 'Rafael Mendes', 'specialty': 'Clínica geral', 'initials': 'RM', 'color': 'blue', 'photo': 'rafael.png', 'price': '180'},
-    {'id': '3', 'name': 'Beatriz Almeida', 'specialty': 'Dermatologia', 'initials': 'BA', 'color': 'sand', 'photo': 'beatriz.png', 'price': '250'},
-]
+DOCTORS, STAFF, APPOINTMENTS = [], [], []
+ROUTINES, DAY_HOURS = {}, {}
 SPECIALTIES = ['Alergologia', 'Cardiologia', 'Clínica geral', 'Dermatologia', 'Endocrinologia', 'Fisioterapia', 'Ginecologia', 'Neurologia', 'Nutrição', 'Oftalmologia', 'Ortopedia', 'Otorrinolaringologia', 'Pediatria', 'Psicologia', 'Psiquiatria', 'Urologia']
-TIMES = [f'{hour:02d}:00' for hour in range(8, 19)]
+TIMES = backend.HOURS
 TOMORROW = (date.today() + timedelta(days=1)).isoformat()
-APPOINTMENTS = [{'id': 'demo', 'doctor': '1', 'patient': 'Ana Silva', 'owner': 'ana@email.com', 'date': TOMORROW, 'time': '09:00', 'reason': 'Consulta de rotina', 'description': '', 'status': 'Confirmado'}]
-STAFF = [{'id': '1', 'name': 'Marina Costa', 'role': 'Profissional', 'active': True}, {'id': '2', 'name': 'Rafael Mendes', 'role': 'Profissional', 'active': True}, {'id': '3', 'name': 'Beatriz Almeida', 'role': 'Profissional', 'active': True}, {'id': '4', 'name': 'Lucas Oliveira', 'role': 'Atendente', 'active': True}]
-BLOCKED = set()
-ROUTINES = {}
-DAY_HOURS = {}
-PATIENTS = {'ana@email.com': 'Ana Silva'}
-for employee, email in zip(STAFF, ['marina@agendai.com', 'rafael@agendai.com', 'beatriz@agendai.com', 'atendente@agendai.com']):
-    employee['email'] = email
 
 
 def h(value):
@@ -36,7 +29,17 @@ def h(value):
 
 
 def doctor(ident):
-    return next((d for d in DOCTORS if d['id'] == ident), DOCTORS[0])
+    found = next((d for d in DOCTORS if d['id'] == ident), None)
+    if not found:
+        raise backend.DomainError('Médico não encontrado.', 404)
+    return found
+
+
+def refresh_data():
+    global DOCTORS, STAFF, APPOINTMENTS, ROUTINES, DAY_HOURS
+    DOCTORS, STAFF, APPOINTMENTS, ROUTINES, DAY_HOURS = backend.snapshot()
+    for s in STAFF:
+        s['role'] = ROLES[s['role']]
 
 
 def active_doctors():
@@ -60,6 +63,7 @@ def page(title, content, user=None, current='', message=''):
         role = user['role']
         menus = {'paciente': [('buscar', '⌕', 'Encontrar profissional'), ('consultas', '▦', 'Meus agendamentos')], 'profissional': [('agenda', '▦', 'Minha agenda'), ('horarios', '◷', 'Disponibilidade')], 'atendente': [('buscar', '⌕', 'Agendar consulta'), ('consultas', '▦', 'Agendamentos')], 'admin': [('equipe', '♧', 'Funcionários')]}
         menus['atendente'].append(('horarios', '◷', 'Horários dos médicos'))
+        menus[role].append(('senha', '⚙', 'Alterar senha'))
         links = ''.join(f'<a class="nav {"selected" if key == current else ""}" href="/{key}"><span>{icon}</span>{label}</a>' for key, icon, label in menus[role])
         shell = f'<aside><a class="brand" href="/">agend<span>aí</span><i>✳</i></a><div class="workspace">ESPAÇO DO {ROLES[role].upper()}</div><nav>{links}</nav><div class="aside-bottom"><div class="demo-tag">◌ Ambiente de demonstração</div><div class="identity"><b class="mini-avatar">{h(user["name"][:1].upper())}</b><div><strong>{h(user["name"])}</strong><small>{ROLES[role]}</small></div></div><form method="post" action="/sair"><button class="logout">Sair da conta ↗</button></form></div></aside><div class="shell"><header><span>Seu cuidado, bem organizado.</span><span class="header-right">✧ &nbsp; AgendAí <b>MVP</b></span></header><main>{f"<div class=flash role=status>{h(message)}</div>" if message else ""}{content}</main><footer>AgendAí © {date.today().year} <span>Mais tempo para cuidar de você.</span></footer></div>'
     else:
@@ -69,18 +73,14 @@ def page(title, content, user=None, current='', message=''):
 
 def login(register=False):
     title = 'Crie sua conta' if register else 'Bom ter você por aqui.'
-    form = f'''<div class="login"><section class="login-story"><a class="brand" href="/">agend<span>aí</span><i>✳</i></a><div><div class="eyebrow">CUIDADO QUE CONECTA</div><h1>Sua saúde merece<br>um lugar na agenda.</h1><p>Encontre quem cuida de você.<br>Agende com facilidade. Viva com tranquilidade.</p><div class="story-art"><span>✳</span><div class="floating-card">✓ &nbsp; Cuidado marcado.<small>O próximo passo é se sentir bem.</small></div></div></div><small>Uma conexão mais simples entre pessoas e cuidado.</small></section><section class="login-form"><div class="login-box"><div class="eyebrow">BEM-VINDO À AGENDAÍ</div><h2>{title}</h2><p class="muted">Escolha seu perfil para conhecer a plataforma.</p><form method="post" action="/entrar">{field('Como podemos chamar você?', 'name', value='Ana Silva')}{field('E-mail', 'email', 'email', 'ana@email.com')}{field('Senha demonstrativa', 'password', 'password')}<label>Quero acessar como<select name="role">{''.join(f'<option value="{k}">{v}</option>' for k,v in ROLES.items())}</select></label><button class="primary wide">{'Criar conta e continuar' if register else 'Entrar na plataforma'} <span>→</span></button></form><p class="muted center">{'Já tem uma conta?' if register else 'Primeira vez por aqui?'} <a href="{'/' if register else '/cadastro'}">{'Entrar' if register else 'Criar conta'}</a></p><div class="demo-note">ⓘ Protótipo: a senha não é validada nem armazenada.<br>Os dados são fictícios e reiniciam ao encerrar o servidor.</div></div></section></div>'''
-    profile_start = form.index('<label>Quero acessar como')
-    profile_end = form.index('</label>', profile_start) + len('</label>')
-    form = form[:profile_start] + form[profile_end:]
-    form = form.replace('Escolha seu perfil para conhecer a plataforma.', 'Preencha seus dados para criar sua conta de paciente.' if register else 'Entre com seu e-mail e senha para continuar.')
-    if register:
-        form = form.replace('action="/entrar"', 'action="/cadastrar-paciente"')
-    else:
-        form = form.replace(field('Como podemos chamar você?', 'name', value='Ana Silva'), '')
-    form = form.replace('Senha demonstrativa', 'Senha')
+    action = '/cadastrar-paciente' if register else '/entrar'
+    name_field = field('Nome completo', 'name') if register else ''
+    button = 'Criar conta' if register else 'Entrar na plataforma'
+    link = '<a href="/">Já tem conta? Entrar</a>' if register else '<a href="/cadastro">Criar conta de paciente</a>'
+    email_field = field('E-mail', 'email', 'email')
+    password_field = field('Senha (mínimo 8 caracteres)' if register else 'Senha', 'password', 'password')
+    form = f'''<div class="login"><section class="login-story"><a class="brand" href="/">agend<span>aí</span><i>✳</i></a><div><div class="eyebrow">CUIDADO QUE CONECTA</div><h1>Sua saúde merece<br>um lugar na agenda.</h1><p>Encontre quem cuida de você.<br>Agende com facilidade.</p><div class="story-art"><span>✳</span><div class="floating-card">✓ Cuidado marcado.<small>O próximo passo é se sentir bem.</small></div></div></div><small>Uma conexão mais simples entre pessoas e cuidado.</small></section><section class="login-form"><div class="login-box"><div class="eyebrow">BEM-VINDO À AGENDAÍ</div><h2>{title}</h2><p class="muted">Entre com seus dados para continuar.</p><form method="post" action="{action}">{name_field}{email_field}{password_field}<button class="primary wide">{button} →</button></form><p class="center">{link}</p></div></section></div>'''
     return page(title, form)
-
 
 def heading(eyebrow, title, subtitle, extra=''):
     return f'<div class="heading"><div><div class="eyebrow">{eyebrow}</div><h1>{title}</h1><p class="muted">{subtitle}</p></div>{extra}</div>'
@@ -96,22 +96,24 @@ def search(user, query):
     content += '<section class="hero"><div><span class="pill">CUIDAR COMEÇA COM UM ENCONTRO</span><h2>O cuidado que você precisa,<br>no horário que funciona.</h2><p>Profissionais de saúde e uma agenda mais simples.<br>Seu próximo atendimento começa aqui.</p></div><div class="hero-art">✳<span class="art-badge">♡ &nbsp; Sua saúde em primeiro lugar</span></div></section>'
     content += f'<section class="panel search-panel"><form method="get" action="/buscar"><div class="search-top"><h3>Encontre seu profissional</h3><div class="toggle"><label><input type="radio" name="mode" value="specialty" {"checked" if mode != "name" else ""}> Especialidade</label><label><input type="radio" name="mode" value="name" {"checked" if mode == "name" else ""}> Nome do médico</label></div></div><div class="search-line"><input list="specialties" aria-label="Buscar profissional" name="q" value="{h(term)}" placeholder="⌕  Busque por especialidade ou nome..."><datalist id="specialties">{specialty_options}</datalist><button class="primary">Buscar profissional →</button></div><div class="specialty-list"><span>Especialidades:</span> {specialty_text}</div></form></section><div class="section-title"><h2>Profissionais disponíveis</h2><span class="muted">{len(docs)} profissionais encontrados</span></div><div class="doctor-grid">'
     for d in docs:
-        content += f'<article class="panel doctor-card"><div class="doctor-top"><img class="doctor-photo" src="/static/doctors/{d["photo"]}" alt="Foto de {h(d["name"])}"><span class="available">● Agenda aberta</span></div><h3>{"Dr." if d["id"] == "2" else "Dra."} {d["name"]}</h3><p class="specialty">{d["specialty"]}</p><div class="doctor-meta">✧ Atendimento presencial<br>⌖ São Paulo, SP</div><div class="doctor-price"><span>Consulta a partir de<strong>R$ {d["price"]},00</strong></span><span class="muted">Particular</span></div><a class="outline wide" href="/agendar?doctor={d["id"]}">Escolher horário <span>→</span></a></article>'
+        content += f'<article class="panel doctor-card"><div class="doctor-top"><img class="doctor-photo" src="/static/doctors/{d["photo"]}" alt="Foto de {h(d["name"])}"><span class="available">● Agenda aberta</span></div><h3>{"Dr." if d["id"] == "2" else "Dra."} {h(d["name"])}</h3><p class="specialty">{h(d["specialty"])}</p><div class="doctor-meta">✧ Atendimento presencial<br>⌖ São Paulo, SP</div><div class="doctor-price"><span>Consulta a partir de<strong>R$ {d["price"]},00</strong></span><span class="muted">Particular</span></div><a class="outline wide" href="/agendar?doctor={d["id"]}">Escolher horário <span>→</span></a></article>'
     return content + ('</div>' if docs else '</div><div class="empty">Nenhum profissional encontrado. Tente outra busca.</div>')
 
 
 def booking(user, query):
     d = doctor(query.get('doctor', ['1'])[0])
+    if not d['active']:
+        raise backend.DomainError('Profissional indisponível.', 404)
     day = query.get('date', [TOMORROW])[0]
     try:
         if date.fromisoformat(day) < date.today(): day = TOMORROW
     except ValueError:
         day = TOMORROW
     date_field = field('Data da consulta', 'date', 'date', day)
-    date_field = date_field.replace('>', ' onchange="this.form.submit()">', 1)
+    date_field = date_field.replace('<input ', '<input onchange="this.form.submit()" ', 1)
     full = all(occupied(d['id'], day, t) for t in TIMES)
     content = heading('AGENDAR CONSULTA', 'Um horário para cuidar de você.', 'Escolha a data, o horário e conte o motivo do atendimento.', '<a class="text-link" href="/buscar">← Voltar à busca</a>')
-    content += f'<div class="booking-layout"><section class="panel profile"><img class="profile-photo" src="/static/doctors/{d["photo"]}" alt="Foto de {h(d["name"])}"><h2>{d["name"]}</h2><p class="specialty">{d["specialty"]}</p><hr><p>⌖ Atendimento presencial · São Paulo</p><p>◷ Duração estimada: 50 minutos</p><h3>R$ {d["price"]},00</h3><p class="muted">Consulta particular</p></section><section class="panel"><div class="schedule-head"><div><h2>Escolha um horário</h2><p class="muted">Os horários livres aparecem abaixo.</p></div></div><form method="get" action="/agendar"><input type="hidden" name="doctor" value="{d["id"]}">{date_field}</form><h3 class="{ "unavailable" if full else "" }">{"Indisponível" if full else "Horários disponíveis"} · {fmt(day)}</h3><form method="post" action="/agendar"><input type="hidden" name="doctor" value="{d["id"]}"><input type="hidden" name="date" value="{day}"><div class="slots">'
+    content += f'<div class="booking-layout"><section class="panel profile"><img class="profile-photo" src="/static/doctors/{d["photo"]}" alt="Foto de {h(d["name"])}"><h2>{h(d["name"])}</h2><p class="specialty">{h(d["specialty"])}</p><hr><p>⌖ Atendimento presencial · São Paulo</p><p>◷ Duração estimada: 50 minutos</p><h3>R$ {d["price"]},00</h3><p class="muted">Consulta particular</p></section><section class="panel"><div class="schedule-head"><div><h2>Escolha um horário</h2><p class="muted">Os horários livres aparecem abaixo.</p></div></div><form method="get" action="/agendar"><input type="hidden" name="doctor" value="{d["id"]}">{date_field}</form><h3 class="{ "unavailable" if full else "" }">{"Indisponível" if full else "Horários disponíveis"} · {fmt(day)}</h3><form method="post" action="/agendar"><input type="hidden" name="doctor" value="{d["id"]}"><input type="hidden" name="date" value="{day}"><div class="slots">'
     for t in TIMES:
         busy = occupied(d['id'], day, t)
         booked = any(a['doctor'] == d['id'] and a['date'] == day and a['time'] == t and a['status'] == 'Confirmado' for a in APPOINTMENTS)
@@ -120,6 +122,7 @@ def booking(user, query):
         content += f'<label class="slot {state}"><input type="radio" name="time" value="{t}" required {"disabled" if busy else ""}><span>{t}<small>{caption}</small></span></label>'
     content += '</div><p class="slot-legend">🟢 Disponível · 🟡 Médico não atende · 🔴 Já agendado</p>'
     if user['role'] == 'atendente': content += '<h3>Para quem é a consulta?</h3><p class="muted">Informe os dados do paciente. O agendamento ficará vinculado ao e-mail dele.</p>' + field('Nome completo do paciente', 'patient') + field('E-mail do paciente', 'patient_email', 'email')
+    if user['role'] == 'atendente': content += field('Senha inicial (apenas para paciente novo, mínimo 8 caracteres)', 'patient_password', 'password', required=False)
     content += field('Motivo da consulta *', 'reason') + '<label>Descrição <span class="muted">(opcional)</span><textarea name="description" rows="3" placeholder="Se desejar, acrescente informações sobre o atendimento."></textarea></label><button class="primary wide" '+('disabled' if full else '')+'>Confirmar agendamento →</button></form></section></div>'
     return content
 
@@ -127,13 +130,14 @@ def booking(user, query):
 def appointments(user, agenda=False):
     items = [a for a in APPOINTMENTS if user['role'] == 'atendente' or (a['doctor'] == user.get('doctor', '1') if agenda else a['owner'] == user['email'])]
     confirmed = [a for a in items if a['status'] == 'Confirmado']
+    upcoming = [a for a in confirmed if a['date'] >= date.today().isoformat()]
     content = heading('SUA ROTINA, MAIS ORGANIZADA', 'Minha agenda' if agenda else 'Agendamentos', 'Acompanhe os atendimentos e os detalhes de cada consulta.', '<a class="primary" href="/horarios">Configurar horários</a>' if agenda else '<a class="primary" href="/buscar">+ Agendar consulta</a>')
-    content += f'<div class="stats"><div class="panel"><span>Consultas confirmadas</span><strong>{len(confirmed):02}</strong></div><div class="panel"><span>Consultas canceladas</span><strong>{len(items)-len(confirmed):02}</strong></div><div class="panel"><span>Próximo atendimento</span><strong class="stat-date">{fmt(min(a["date"] for a in confirmed)) if confirmed else "Sem consultas"}</strong></div></div><section class="panel"><div class="section-title"><h2>{"Atendimentos" if agenda else "Suas consultas"}</h2><span class="muted">Todos os agendamentos</span></div>'
+    content += f'<div class="stats"><div class="panel"><span>Consultas confirmadas</span><strong>{len(confirmed):02}</strong></div><div class="panel"><span>Consultas canceladas</span><strong>{len(items)-len(confirmed):02}</strong></div><div class="panel"><span>Próximo atendimento</span><strong class="stat-date">{fmt(min(a["date"] for a in upcoming)) if upcoming else "Sem consultas"}</strong></div></div><section class="panel"><div class="section-title"><h2>{"Atendimentos" if agenda else "Suas consultas"}</h2><span class="muted">Todos os agendamentos</span></div>'
     for a in sorted(items, key=lambda a: (a['date'], a['time'])):
         d = doctor(a['doctor'])
         description = '<p>' + h(a['description']) + '</p>' if a['description'] else ''
-        display_name = h(a["patient"]) if agenda or user["role"] == "atendente" else d["name"]
-        content += f'<article class="appointment"><div class="date-tile"><strong>{a["date"][-2:]}</strong><small>{fmt(a["date"])[3:10]}</small></div><img class="appointment-photo" src="/static/doctors/{d["photo"]}" alt=""><div class="appointment-detail"><h3>{display_name}</h3><p>{d["specialty"]} · <b>{a["time"]}</b> · {fmt(a["date"])}</p><p><b>Motivo:</b> {h(a["reason"])}</p>{description}</div><div class="appointment-actions"><span class="status {"cancelled" if a["status"] != "Confirmado" else ""}">{a["status"]}</span>'
+        display_name = h(a["patient"]) if agenda or user["role"] == "atendente" else h(d["name"])
+        content += f'<article class="appointment"><div class="date-tile"><strong>{a["date"][-2:]}</strong><small>{fmt(a["date"])[3:10]}</small></div><img class="appointment-photo" src="/static/doctors/{d["photo"]}" alt=""><div class="appointment-detail"><h3>{display_name}</h3><p>{h(d["specialty"])} · <b>{a["time"]}</b> · {fmt(a["date"])}</p><p><b>Motivo:</b> {h(a["reason"])}</p>{description}</div><div class="appointment-actions"><span class="status {"cancelled" if a["status"] != "Confirmado" else ""}">{a["status"]}</span>'
         if a['status'] == 'Confirmado':
             content += f'<form method="post" action="/cancelar"><input type="hidden" name="id" value="{a["id"]}"><button class="danger" onclick="return confirm(\'Cancelar esta consulta?\')">Cancelar consulta</button></form>'
         content += '</div></article>'
@@ -229,13 +233,34 @@ def availability(user, query):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def cookie(self, name):
+        try:
+            c = SimpleCookie(self.headers.get('Cookie', ''))
+            return c[name].value if name in c else ''
+        except Exception:
+            return ''
+
     def user(self):
-        c = SimpleCookie(self.headers.get('Cookie', ''))
-        return SESSIONS.get(c['session'].value) if 'session' in c else None
+        token = self.cookie('session')
+        account = backend.session_user(token)
+        if account:
+            account['message'] = SESSIONS.pop(token, '')
+        return account
 
     def send(self, body, status=200, mime='text/html; charset=utf-8'):
+        csrf = self.cookie('csrf')
+        if not re.fullmatch(r'[a-f0-9]{64}', csrf):
+            csrf = secrets.token_hex(32)
+        if isinstance(body, str) and mime.startswith('text/html'):
+            body = re.sub(r'(<form\b[^>]*method="post"[^>]*>)', lambda m: m[0] + f'<input type="hidden" name="csrf" value="{csrf}">', body)
         data = body.encode('utf-8') if isinstance(body, str) else body
-        self.send_response(status); self.send_header('Content-Type', mime); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
+        self.send_response(status)
+        self.send_header('Set-Cookie', f'csrf={csrf}; SameSite=Strict; Path=/')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Referrer-Policy', 'same-origin')
+        self.send_header('Content-Type', mime); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
 
     def redirect(self, url, cookie=None):
         self.send_response(303)
@@ -244,11 +269,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        with LOCK:
+            try:
+                refresh_data()
+                self.render_get()
+            except (backend.DomainError, ValueError) as exc:
+                self.error(str(exc), getattr(exc, 'status', 400))
+            except Exception:
+                logging.exception('Falha ao renderizar página')
+                self.error('Não foi possível carregar esta página.', 500)
+
+    def error(self, message, status=400):
+        self.send(page('Confira os dados', f'<main><section class="panel"><h1>{h(message)}</h1><a class="outline" href="/">Voltar à plataforma</a></section></main>'), status)
+
+    def render_get(self):
         path = urlparse(self.path).path
         q = parse_qs(urlparse(self.path).query)
         if path.startswith('/static/'):
-            asset = ROOT / path.lstrip('/')
-            if asset.exists() and asset.is_file():
+            asset = (ROOT / path.lstrip('/')).resolve()
+            if (ROOT / 'static').resolve() in asset.parents and asset.exists() and asset.is_file():
                 mime = 'text/css; charset=utf-8' if asset.suffix == '.css' else 'image/svg+xml' if asset.suffix == '.svg' else 'image/png'
                 return self.send(asset.read_bytes(), mime=mime)
             return self.send('Not found', 404)
@@ -258,9 +297,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/': return self.redirect('/' + home)
         allowed = {'paciente': ['buscar', 'agendar', 'consultas'], 'profissional': ['agenda', 'horarios'], 'atendente': ['buscar', 'agendar', 'consultas'], 'admin': ['equipe']}[user['role']]
         if user['role'] == 'atendente': allowed.append('horarios')
+        allowed.append('senha')
         key = path.strip('/')
         if key not in allowed: return self.redirect('/' + home)
-        if key == 'buscar': content = search(user, q)
+        if key == 'senha':
+            content = heading('SUA CONTA', 'Alterar senha', 'Após salvar, entre novamente com a nova senha.') + '<section class="panel"><form method="post" action="/senha">' + field('Senha atual', 'current_password', 'password') + field('Nova senha (mínimo 8 caracteres)', 'new_password', 'password') + '<button class="primary">Salvar nova senha</button></form></section>'
+        elif key == 'buscar': content = search(user, q)
         elif key == 'agendar': content = booking(user, q)
         elif key == 'agenda': content = professional_calendar(user, q)
         elif key == 'consultas': content = staff_view(user, q, 'consultas') if user['role'] == 'atendente' else appointments(user)
@@ -268,7 +310,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             content = heading('ADMINISTRAÇÃO', 'Funcionários', 'Cadastre profissionais e atendentes e gerencie sua equipe.')
             content += '<section class="panel"><h2>Cadastrar funcionário</h2><form method="post" action="/funcionarios">'
-            content += field('Nome completo', 'name') + field('E-mail', 'email', 'email')
+            content += field('Nome completo', 'name') + field('E-mail', 'email', 'email') + '<p class="muted">Senha inicial: <strong>SenhaPadraoFunc</strong>. O funcionário pode alterá-la em Alterar senha.</p>'
             content += '<label>Perfil<select name="role" onchange="document.getElementById(\'professional-fields\').hidden=this.value!==\'profissional\'"><option value="profissional">Profissional</option><option value="atendente">Atendente</option></select></label><div id="professional-fields">'
             content += field('Especialidade (obrigatória para profissionais)', 'specialty', required=False) + field('Valor da consulta em R$', 'price', 'number', '180', required=False)
             content += '</div><button class="primary">Cadastrar funcionário</button></form></section><section class="panel" style="margin-top:24px"><h2>Equipe cadastrada</h2>'
@@ -283,107 +325,87 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         with LOCK:
             try: self.post()
-            except (ValueError, KeyError): self.send(page('Dados inválidos', '<main><h1>Confira os dados informados.</h1><a href="/">Voltar à plataforma</a></main>'), 400)
+            except backend.DomainError as exc: self.error(str(exc), exc.status)
+            except (ValueError, KeyError): self.error('Confira os dados informados.')
+            except sqlite3.Error:
+                logging.exception('Erro de banco de dados')
+                self.error('Não foi possível salvar. Tente novamente.', 503)
+            except Exception:
+                logging.exception('Erro na requisição')
+                self.error('Não foi possível concluir a operação.', 500)
 
     def post(self):
+        length = int(self.headers.get('Content-Length', 0))
+        if not 0 < length <= 32768:
+            raise backend.DomainError('Formulário inválido ou muito grande.', 413)
+        data = parse_qs(self.rfile.read(length).decode('utf-8'), keep_blank_values=True, max_num_fields=50)
+        get = lambda key: data.get(key, [''])[0]
+        csrf = self.cookie('csrf')
+        if not re.fullmatch(r'[a-f0-9]{64}', csrf) or not secrets.compare_digest(csrf, get('csrf')):
+            raise backend.DomainError('A página expirou. Recarregue antes de enviar novamente.', 403)
+        origin = self.headers.get('Origin')
+        if origin and urlparse(origin).netloc != self.headers.get('Host'):
+            raise backend.DomainError('Origem do formulário inválida.', 403)
         path = urlparse(self.path).path
-        data = parse_qs(self.rfile.read(int(self.headers.get('Content-Length', 0))).decode(), keep_blank_values=True)
-        get = lambda k: data.get(k, [''])[0].strip()
+        values = {key: get(key).strip() for key in data}
         if path in ['/entrar', '/cadastrar-paciente']:
-            email = get('email').lower()
-            if '@' not in email or not get('password'): raise ValueError()
-            employee = next((s for s in STAFF if s.get('email') == email), None)
             if path == '/cadastrar-paciente':
-                if not get('name') or email in PATIENTS or employee or email == 'admin@agendai.com':
-                    return self.send(page('Cadastro', '<main><h1>Nome inválido ou e-mail já cadastrado.</h1><a href="/cadastro">Voltar</a></main>'), 400)
-                PATIENTS[email] = get('name')
-            if employee and not employee['active']:
-                return self.send(page('Acesso', '<main><h1>Este funcionário está desligado.</h1><a href="/">Voltar ao login</a></main>'), 403)
-            if employee:
-                account = {'name': employee['name'], 'role': 'profissional' if employee['role'] == 'Profissional' else 'atendente', 'doctor': employee['id']}
-            elif email == 'admin@agendai.com':
-                account = {'name': 'Administrador', 'role': 'admin'}
-            elif email in PATIENTS:
-                account = {'name': PATIENTS[email], 'role': 'paciente'}
-            else:
-                return self.send(page('Acesso', '<main><h1>E-mail não cadastrado.</h1><a href="/">Voltar ao login</a></main>'), 400)
-            token = secrets.token_urlsafe(24)
-            SESSIONS[token] = dict(account, email=email)
-            return self.redirect('/', f'session={token}; HttpOnly; SameSite=Lax; Path=/')
+                backend.register(get('name'), get('email'), get('password'))
+            token = backend.authenticate(get('email'), get('password'), self.client_address[0])
+            old_token = self.cookie('session')
+            if old_token:
+                backend.logout(old_token)
+            return self.redirect('/', f'session={token}; HttpOnly; SameSite=Lax; Max-Age=28800; Path=/')
         user = self.user()
-        if not user: return self.redirect('/')
+        if not user:
+            return self.redirect('/')
+        target, message = '/', ''
         if path == '/sair':
-            cookie = SimpleCookie(self.headers.get('Cookie', ''))
-            if 'session' in cookie: SESSIONS.pop(cookie['session'].value, None)
-            return self.redirect('/', 'session=; Max-Age=0; Path=/')
-        if path == '/agendar' and user['role'] in ['paciente', 'atendente']:
-            doc, day, hour = get('doctor'), get('date'), get('time')
-            if doc not in [d['id'] for d in active_doctors()] or hour not in TIMES or date.fromisoformat(day) < date.today() or not get('reason'): raise ValueError()
-            if occupied(doc, day, hour):
-                user['message'] = 'Este horário acabou de ficar indisponível. Escolha outro horário.'
-                return self.redirect(f'/agendar?doctor={doc}&date={day}')
-            patient = get('patient') if user['role'] == 'atendente' else user['name']
-            owner = get('patient_email').lower() if user['role'] == 'atendente' else user['email']
-            if not patient or not owner: raise ValueError()
-            APPOINTMENTS.append({'id': secrets.token_hex(8), 'doctor': doc, 'patient': patient, 'owner': owner, 'date': day, 'time': hour, 'reason': get('reason'), 'description': get('description'), 'status': 'Confirmado'})
-            user['message'] = f'Consulta agendada para {patient}.' if user['role'] == 'atendente' else 'Tudo certo! Sua consulta foi agendada.'
-            return self.redirect(f'/consultas?doctor={doc}' if user['role'] == 'atendente' else '/consultas')
-        if path == '/cancelar' and user['role'] != 'admin':
-            a = next((a for a in APPOINTMENTS if a['id'] == get('id')), None)
-            if not a or not (user['role'] == 'atendente' or user['role'] == 'profissional' and a['doctor'] == user['doctor'] or user['role'] == 'paciente' and a['owner'] == user['email']): return self.send('Acesso não permitido', 403)
-            if a['status'] == 'Confirmado':
-                a['status'] = 'Cancelado'
-            user['message'] = 'Consulta cancelada.'
-            return self.redirect('/agenda' if user['role'] == 'profissional' else f'/consultas?doctor={a["doctor"]}' if user['role'] == 'atendente' else '/consultas')
-        if path == '/horarios' and user['role'] in ['profissional', 'atendente']:
-            day = get('date'); date.fromisoformat(day)
-            doc = user['doctor'] if user['role'] == 'profissional' else get('doctor')
-            if doc not in [d['id'] for d in active_doctors()]: raise ValueError()
-            selected = set(data.get('available', [])) & set(TIMES)
-            if get('scope') == 'routine':
-                ROUTINES[doc] = selected
-                user['message'] = 'Carga horária salva para todos os dias. Exceções de datas específicas e consultas existentes foram mantidas.'
-                return self.redirect(f'/horarios?scope=routine&doctor={doc}')
-            selected.update(a['time'] for a in APPOINTMENTS if a['doctor'] == doc and a['date'] == day and a['status'] == 'Confirmado')
-            DAY_HOURS[(doc, day)] = selected
-            user['message'] = 'Disponibilidade atualizada para este dia.'
-            return self.redirect(f'/horarios?date={day}&doctor={doc}')
-        if path == '/funcionarios' and user['role'] == 'admin':
-            name, email, role = get('name'), get('email').lower(), get('role')
-            if not name or '@' not in email or role not in ['profissional', 'atendente']:
-                raise ValueError()
-            if any(s.get('email') == email for s in STAFF) or email in PATIENTS or email == 'admin@agendai.com':
-                user['message'] = 'Este e-mail já está cadastrado na equipe.'
-                return self.redirect('/equipe')
-            if role == 'profissional' and not get('specialty'):
-                user['message'] = 'Informe a especialidade do profissional.'
-                return self.redirect('/equipe')
-            price = get('price') or '180'
-            if role == 'profissional' and (not price.isdigit() or int(price) < 0):
-                raise ValueError()
-            ident = secrets.token_hex(8)
-            STAFF.append({'id': ident, 'name': name, 'email': email, 'role': ROLES[role], 'active': True})
-            if role == 'profissional':
-                DOCTORS.append({'id': ident, 'name': name, 'specialty': get('specialty'), 'initials': ''.join(part[0] for part in name.split()[:2]), 'color': 'blue', 'photo': 'default.svg', 'price': price})
-            user['message'] = f'{name}: cadastro realizado como {ROLES[role].lower()}.'
-            return self.redirect('/equipe')
-        if path == '/demitir' and user['role'] == 'admin':
-            s = next(s for s in STAFF if s['id'] == get('id'))
-            s['active'] = False
-            user['message'] = f'{s["name"]}: desligamento registrado na demonstração.'
-            return self.redirect('/equipe')
-        self.send('Acesso não permitido', 403)
+            backend.logout(self.cookie('session'))
+            return self.redirect('/', 'session=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/')
+        elif path == '/senha':
+            backend.change_password(user, get('current_password'), get('new_password'))
+            return self.redirect('/', 'session=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/')
+        elif path == '/agendar':
+            values['patient_password'] = get('patient_password')
+            doc = backend.book(user, values)
+            target = f'/consultas?doctor={doc}' if user['role']=='atendente' else '/consultas'
+            message = 'Consulta agendada com sucesso.'
+        elif path == '/cancelar':
+            doc = backend.cancel(user, get('id'))
+            target = '/agenda' if user['role']=='profissional' else f'/consultas?doctor={doc}' if user['role']=='atendente' else '/consultas'
+            message = 'Consulta cancelada.'
+        elif path == '/horarios':
+            doc = backend.save_hours(user, get('doctor'), get('date'), get('scope'), data.get('available', []))
+            target = f'/horarios?doctor={doc}&scope={get("scope")}&date={get("date")}'
+            message = 'Disponibilidade salva. Consultas existentes foram preservadas.'
+        elif path == '/funcionarios':
+            backend.create_employee(user, values)
+            target, message = '/equipe', 'Funcionário cadastrado.'
+        elif path == '/demitir':
+            backend.dismiss(user, get('id'))
+            target, message = '/equipe', 'Funcionário desligado. O acesso foi revogado.'
+        else:
+            raise backend.DomainError('Operação não encontrada.', 404)
+        SESSIONS[self.cookie('session')] = message
+        return self.redirect(target)
 
 
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description='Iniciar o MVP AgendAí')
+    parser = argparse.ArgumentParser(description='Iniciar AgendAí')
     parser.add_argument('--port', type=int, default=8765)
     args = parser.parse_args()
+    backend.initialize()
+    initial_password = backend.seed_demo()
+    backend.apply_employee_initial_password()
+    if initial_password:
+        print('Banco criado. Senha inicial de admin e paciente de exemplo:', initial_password, flush=True)
+        print('Admin: admin@agendai.com — guarde a senha antes de fechar este terminal.', flush=True)
     try:
         server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     except OSError as exc:
-        raise SystemExit(f'Não foi possível iniciar na porta {args.port}: {exc}. Tente python app.py --port 8766')
+        raise SystemExit(f'Não foi possível iniciar na porta {args.port}: {exc}. Tente --port 8766')
     print(f'AgendAí disponível em http://127.0.0.1:{args.port} — Ctrl+C para encerrar.', flush=True)
     try:
         server.serve_forever()

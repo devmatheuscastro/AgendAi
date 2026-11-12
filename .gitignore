@@ -3,3 +3,7 @@ __pycache__/
 .venv/
 server.log
 server-error.log
+data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
