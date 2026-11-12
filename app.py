@@ -26,6 +26,9 @@ STAFF = [{'id': '1', 'name': 'Marina Costa', 'role': 'Profissional', 'active': T
 BLOCKED = set()
 ROUTINES = {}
 DAY_HOURS = {}
+PATIENTS = {'ana@email.com': 'Ana Silva'}
+for employee, email in zip(STAFF, ['marina@agendai.com', 'rafael@agendai.com', 'beatriz@agendai.com', 'atendente@agendai.com']):
+    employee['email'] = email
 
 
 def h(value):
@@ -67,6 +70,15 @@ def page(title, content, user=None, current='', message=''):
 def login(register=False):
     title = 'Crie sua conta' if register else 'Bom ter você por aqui.'
     form = f'''<div class="login"><section class="login-story"><a class="brand" href="/">agend<span>aí</span><i>✳</i></a><div><div class="eyebrow">CUIDADO QUE CONECTA</div><h1>Sua saúde merece<br>um lugar na agenda.</h1><p>Encontre quem cuida de você.<br>Agende com facilidade. Viva com tranquilidade.</p><div class="story-art"><span>✳</span><div class="floating-card">✓ &nbsp; Cuidado marcado.<small>O próximo passo é se sentir bem.</small></div></div></div><small>Uma conexão mais simples entre pessoas e cuidado.</small></section><section class="login-form"><div class="login-box"><div class="eyebrow">BEM-VINDO À AGENDAÍ</div><h2>{title}</h2><p class="muted">Escolha seu perfil para conhecer a plataforma.</p><form method="post" action="/entrar">{field('Como podemos chamar você?', 'name', value='Ana Silva')}{field('E-mail', 'email', 'email', 'ana@email.com')}{field('Senha demonstrativa', 'password', 'password')}<label>Quero acessar como<select name="role">{''.join(f'<option value="{k}">{v}</option>' for k,v in ROLES.items())}</select></label><button class="primary wide">{'Criar conta e continuar' if register else 'Entrar na plataforma'} <span>→</span></button></form><p class="muted center">{'Já tem uma conta?' if register else 'Primeira vez por aqui?'} <a href="{'/' if register else '/cadastro'}">{'Entrar' if register else 'Criar conta'}</a></p><div class="demo-note">ⓘ Protótipo: a senha não é validada nem armazenada.<br>Os dados são fictícios e reiniciam ao encerrar o servidor.</div></div></section></div>'''
+    profile_start = form.index('<label>Quero acessar como')
+    profile_end = form.index('</label>', profile_start) + len('</label>')
+    form = form[:profile_start] + form[profile_end:]
+    form = form.replace('Escolha seu perfil para conhecer a plataforma.', 'Preencha seus dados para criar sua conta de paciente.' if register else 'Entre com seu e-mail e senha para continuar.')
+    if register:
+        form = form.replace('action="/entrar"', 'action="/cadastrar-paciente"')
+    else:
+        form = form.replace(field('Como podemos chamar você?', 'name', value='Ana Silva'), '')
+    form = form.replace('Senha demonstrativa', 'Senha')
     return page(title, form)
 
 
@@ -277,10 +289,26 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         data = parse_qs(self.rfile.read(int(self.headers.get('Content-Length', 0))).decode(), keep_blank_values=True)
         get = lambda k: data.get(k, [''])[0].strip()
-        if path == '/entrar':
-            if get('role') not in ROLES or not get('name') or not get('email'): raise ValueError()
+        if path in ['/entrar', '/cadastrar-paciente']:
+            email = get('email').lower()
+            if '@' not in email or not get('password'): raise ValueError()
+            employee = next((s for s in STAFF if s.get('email') == email), None)
+            if path == '/cadastrar-paciente':
+                if not get('name') or email in PATIENTS or employee or email == 'admin@agendai.com':
+                    return self.send(page('Cadastro', '<main><h1>Nome inválido ou e-mail já cadastrado.</h1><a href="/cadastro">Voltar</a></main>'), 400)
+                PATIENTS[email] = get('name')
+            if employee and not employee['active']:
+                return self.send(page('Acesso', '<main><h1>Este funcionário está desligado.</h1><a href="/">Voltar ao login</a></main>'), 403)
+            if employee:
+                account = {'name': employee['name'], 'role': 'profissional' if employee['role'] == 'Profissional' else 'atendente', 'doctor': employee['id']}
+            elif email == 'admin@agendai.com':
+                account = {'name': 'Administrador', 'role': 'admin'}
+            elif email in PATIENTS:
+                account = {'name': PATIENTS[email], 'role': 'paciente'}
+            else:
+                return self.send(page('Acesso', '<main><h1>E-mail não cadastrado.</h1><a href="/">Voltar ao login</a></main>'), 400)
             token = secrets.token_urlsafe(24)
-            SESSIONS[token] = {'name': get('name'), 'email': get('email').lower(), 'role': get('role'), 'doctor': '1'}
+            SESSIONS[token] = dict(account, email=email)
             return self.redirect('/', f'session={token}; HttpOnly; SameSite=Lax; Path=/')
         user = self.user()
         if not user: return self.redirect('/')
@@ -324,7 +352,7 @@ class Handler(BaseHTTPRequestHandler):
             name, email, role = get('name'), get('email').lower(), get('role')
             if not name or '@' not in email or role not in ['profissional', 'atendente']:
                 raise ValueError()
-            if any(s.get('email') == email for s in STAFF):
+            if any(s.get('email') == email for s in STAFF) or email in PATIENTS or email == 'admin@agendai.com':
                 user['message'] = 'Este e-mail já está cadastrado na equipe.'
                 return self.redirect('/equipe')
             if role == 'profissional' and not get('specialty'):
