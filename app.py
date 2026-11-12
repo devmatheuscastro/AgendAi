@@ -238,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/static/'):
             asset = ROOT / path.lstrip('/')
             if asset.exists() and asset.is_file():
-                mime = 'text/css; charset=utf-8' if asset.suffix == '.css' else 'image/png'
+                mime = 'text/css; charset=utf-8' if asset.suffix == '.css' else 'image/svg+xml' if asset.suffix == '.svg' else 'image/png'
                 return self.send(asset.read_bytes(), mime=mime)
             return self.send('Not found', 404)
         user = self.user()
@@ -258,9 +258,14 @@ class Handler(BaseHTTPRequestHandler):
             notices = [n for n in NOTICES if n['owner'] == user['email']]
             content = heading('FIQUE POR DENTRO', 'Seus avisos', 'As atualizações dos seus agendamentos ficam aqui.') + '<section class="panel">' + (''.join(f'<article class="notice"><span>◉</span><div><h3>Consulta cancelada</h3><p>{h(n["text"])}</p></div></article>' for n in reversed(notices)) or '<div class="empty">Tudo em dia.<p>Você ainda não tem avisos de cancelamento.</p></div>') + '</section>'
         else:
-            content = heading('ADMINISTRAÇÃO', 'Funcionários', 'Consulte a equipe e encerre vínculos de funcionários.') + '<section class="panel">'
+            content = heading('ADMINISTRAÇÃO', 'Funcionários', 'Cadastre profissionais e atendentes e gerencie sua equipe.')
+            content += '<section class="panel"><h2>Cadastrar funcionário</h2><form method="post" action="/funcionarios">'
+            content += field('Nome completo', 'name') + field('E-mail', 'email', 'email')
+            content += '<label>Perfil<select name="role" onchange="document.getElementById(\'professional-fields\').hidden=this.value!==\'profissional\'"><option value="profissional">Profissional</option><option value="atendente">Atendente</option></select></label><div id="professional-fields">'
+            content += field('Especialidade (obrigatória para profissionais)', 'specialty', required=False) + field('Valor da consulta em R$', 'price', 'number', '180', required=False)
+            content += '</div><button class="primary">Cadastrar funcionário</button></form></section><section class="panel" style="margin-top:24px"><h2>Equipe cadastrada</h2>'
             for s in STAFF:
-                content += f'<article class="appointment"><b class="mini-avatar">{s["name"][0]}</b><div class="appointment-detail"><h3>{s["name"]}</h3><p>{s["role"]}</p></div><span class="status {"cancelled" if not s["active"] else ""}">{"Ativo" if s["active"] else "Desligado"}</span>'
+                content += f'<article class="appointment"><b class="mini-avatar">{h(s["name"][0])}</b><div class="appointment-detail"><h3>{h(s["name"])}</h3><p>{h(s["role"])} · {h(s.get("email", ""))}</p></div><span class="status {"cancelled" if not s["active"] else ""}">{"Ativo" if s["active"] else "Desligado"}</span>'
                 if s['active']: content += f'<form method="post" action="/demitir"><input type="hidden" name="id" value="{s["id"]}"><button class="danger" onclick="return confirm(\'Confirmar o desligamento deste funcionário?\')">Demitir funcionário</button></form>'
                 content += '</article>'
             content += '</section>'
@@ -320,6 +325,25 @@ class Handler(BaseHTTPRequestHandler):
             DAY_HOURS[(doc, day)] = selected
             user['message'] = 'Disponibilidade atualizada para este dia.'
             return self.redirect(f'/horarios?date={day}&doctor={doc}')
+        if path == '/funcionarios' and user['role'] == 'admin':
+            name, email, role = get('name'), get('email').lower(), get('role')
+            if not name or '@' not in email or role not in ['profissional', 'atendente']:
+                raise ValueError()
+            if any(s.get('email') == email for s in STAFF):
+                user['message'] = 'Este e-mail já está cadastrado na equipe.'
+                return self.redirect('/equipe')
+            if role == 'profissional' and not get('specialty'):
+                user['message'] = 'Informe a especialidade do profissional.'
+                return self.redirect('/equipe')
+            price = get('price') or '180'
+            if role == 'profissional' and (not price.isdigit() or int(price) < 0):
+                raise ValueError()
+            ident = secrets.token_hex(8)
+            STAFF.append({'id': ident, 'name': name, 'email': email, 'role': ROLES[role], 'active': True})
+            if role == 'profissional':
+                DOCTORS.append({'id': ident, 'name': name, 'specialty': get('specialty'), 'initials': ''.join(part[0] for part in name.split()[:2]), 'color': 'blue', 'photo': 'default.svg', 'price': price})
+            user['message'] = f'{name}: cadastro realizado como {ROLES[role].lower()}.'
+            return self.redirect('/equipe')
         if path == '/demitir' and user['role'] == 'admin':
             s = next(s for s in STAFF if s['id'] == get('id'))
             s['active'] = False
